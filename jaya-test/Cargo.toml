@@ -1,0 +1,15 @@
+[package]
+name = "jaya-test"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+jaya-ecs = { path = "../jaya-ecs" }
+nalgebra = "0.32.2"
+rand = "0.8.5"
+image = "0.24.6"
+rustc-hash = "1.1.0"
+concurrent-queue = "2.2.0"
+# dashmap = { version = "5.4.0", features = ["rayon"] }

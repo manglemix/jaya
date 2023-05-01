@@ -1,0 +1,18 @@
+[package]
+name = "jaya-ecs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rayon = "1.7.0"
+derive_more = { workspace = true }
+concurrent-queue = "2.2.0"
+dashmap = { version = "5.4.0", features = ["rayon"] }
+rand = "0.8.5"
+fxhash = "0.2.1"
+# crossbeam = "0.8.2"
+parking_lot = "0.12.1"
+# mvec = { path = "../mvec" }
+base64 = "0.21.0"

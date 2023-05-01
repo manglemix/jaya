@@ -1,0 +1,14 @@
+[workspace]
+
+members = [
+    "jaya-ecs",
+    "jaya-test",
+    # "mvec"
+]
+
+[workspace.dependencies]
+derive_more = "0.99.17"
+delegate = "0.9.0"
+
+[profile.release]
+debug = true
