@@ -1,4 +1,4 @@
-use rayon::prelude::ParallelIterator;
+use rayon::join;
 
 use crate::{extract::FromUniverse, universe::Universe};
 
@@ -21,8 +21,7 @@ where
     A1: FromUniverse<'a, S>
 {
     fn run_once(&self, universe: &'a S) {
-        A1::get_choices(universe)
-            .for_each(self);
+        A1::iter_choices(universe, self);
     }
 }
 
@@ -35,12 +34,32 @@ where
     S: Universe
 {
     fn run_once(&self, universe: &'a S) {
-        A1::get_choices(universe)
-            .for_each(|choice1| {
-                A2::get_choices(universe)
-                    .for_each(|choice2| {
-                        (self)(choice1.clone(), choice2)
-                    });
-            });
+        A1::iter_choices(
+            universe,
+            |c1| {
+                A2::iter_choices(
+                    universe,
+                    |c2| (self)(c1.clone(), c2)
+                )
+            }
+        );
+    }
+}
+
+impl<'a, S, A1, A2, C1, C2> System<'a, (A1, A2), S> for (C1, C2)
+where
+    S: Universe,
+    C1: System<'a, A1, S> + Sync,
+    C2: System<'a, A2, S> + Sync
+{
+    fn run_once(&self, universe: &'a S) {
+        join(
+            || {
+                self.0.run_once(universe);
+            },
+            || {
+                self.1.run_once(universe);
+            }
+        );
     }
 }

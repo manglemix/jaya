@@ -8,8 +8,10 @@ edition = "2021"
 [dependencies]
 jaya-ecs = { path = "../jaya-ecs" }
 nalgebra = "0.32.2"
-rand = "0.8.5"
+fastrand = "1.9.0"
 image = "0.24.6"
 rustc-hash = "1.1.0"
 concurrent-queue = "2.2.0"
+itertools = "0.10.5"
 # dashmap = { version = "5.4.0", features = ["rayon"] }
+float-ord = "0.3.2"
