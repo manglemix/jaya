@@ -26,10 +26,10 @@ const MAX_MASS: f64 = 10000.0;
 const MIN_DISTANCE: f64 = 5.0;
 
 const MIN_AGE: f64 = 0.75;
-const MAX_AGE: f64 = 11.0;
+const MAX_AGE: f64 = 100.0;
 
-const FRAME_COUNT: usize = 1200;
-const PARTICLE_COUNT: usize = 2000;
+const FRAME_COUNT: usize = 100;
+const PARTICLE_COUNT: usize = 1000;
 
 #[derive(Debug)]
 struct ParticleComponent {
@@ -121,10 +121,10 @@ impl Entities {
 
 
 fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
-    const GRAVITATIONAL_CONST: f64 = 0.000000005;
+    const GRAVITATIONAL_CONST: f64 = 0.000000001;
 
     let mut travel = p1.origin - p2.origin;
-    let distance = travel.magnitude_squared().max(MIN_DISTANCE * MIN_DISTANCE);
+    let distance = travel.magnitude().max(MIN_DISTANCE);
     let force = GRAVITATIONAL_CONST * p1.mass * p2.mass / distance;
     travel = travel.normalize();
 
@@ -151,7 +151,8 @@ fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
 
 
 fn ageing(p1: Query<ParticleComponent>, universe: &Entities) {
-    const FORCE_FACTOR: f64 = 1000.0;
+    const FORCE_FACTOR: f64 = 1.0;
+    const AGE_FACTOR: f64 = 0.5;
     if p1.age > DELTA {
         p1.queue_mut(|p1| p1.age -= DELTA);
         return
@@ -162,12 +163,15 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Entities) {
             return
         }
         let mut travel = p2.origin - p1.origin;
-        let distance_sq = travel.magnitude_squared().max(MIN_DISTANCE * MIN_DISTANCE);
+        let distance = travel.magnitude().max(MIN_DISTANCE);
         travel = travel.normalize();
-        let vel_delta = FORCE_FACTOR * p1.mass / p2.mass / distance_sq * travel;
+        let impulse = FORCE_FACTOR * p1.mass / p2.mass / distance;
+        let vel_delta = impulse * travel;
+        let age_factor = impulse * AGE_FACTOR;
 
         p2.queue_mut(move |p2| {
             p2.velocity += vel_delta;
+            p2.age -= age_factor;
         });
     };
     universe.queue_remove_entity(p1.get_id());
