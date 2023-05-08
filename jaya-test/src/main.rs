@@ -28,7 +28,7 @@ const MIN_DISTANCE: f64 = 5.0;
 const MIN_AGE: f64 = 0.75;
 const MAX_AGE: f64 = 100.0;
 
-const FRAME_COUNT: usize = 100;
+const FRAME_COUNT: usize = 2400;
 const PARTICLE_COUNT: usize = 1000;
 
 #[derive(Debug)]
@@ -131,13 +131,12 @@ fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
     let p1_delta = - force * travel * DELTA;
     let p2_delta = force * travel * DELTA;
 
-    // (p1, p2)
-    //     .queue_mut(move |(p1, p2)| {
+    // jaya_ecs::extract::MultiQuery::queue_mut((p1, p2), move |(p1, p2)| {
     //         p1.origin += p1.velocity * DELTA;
-    //         p1.origin += p1_delta;
+    //         p1.velocity += p1_delta;
             
     //         p2.origin += p2.velocity * DELTA;
-    //         p2.origin += p2_delta;
+    //         p2.velocity += p2_delta;
     //     });
     p1.queue_mut(move |x| {
         x.origin += x.velocity * DELTA;

@@ -13,7 +13,8 @@ derive_more = { workspace = true }
 fastrand = "1.9.0"
 fxhash = "0.2.1"
 crossbeam = "0.8.2"
-# parking_lot = "0.12.1"
+parking_lot = "0.12.1"
 # mvec = { path = "../mvec" }
 base64 = "0.21.0"
 hashers = "1.0.1"
+itertools = "0.10.5"

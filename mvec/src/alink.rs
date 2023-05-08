@@ -47,22 +47,29 @@ impl<T> ALinkedList<T> {
         }
     }
 
-    pub fn push_front(&mut self, value: T) {
-        let next = unsafe { std::ptr::read(&self.first) };
+    // pub fn push_front(&mut self, value: T) {
+    //     let next = unsafe { std::ptr::read(&self.first) };
 
-        let first = Box::new(
-            ANode {
-                value,
-                next: Some(next)
-            }
-        );
+    //     let first = Box::new(
+    //         ANode {
+    //             value,
+    //             next: Some(next)
+    //         }
+    //     );
 
-        self.first = first;
-    }
+    //     self.first = first;
+    // }
 
     #[inline]
     pub fn first(&self) -> &T {
         &self.first.value
+    }
+    
+    #[inline]
+    pub fn last(&self) -> &T {
+        unsafe {
+            &self.last.load(Ordering::Relaxed).as_ref().unwrap_unchecked().value
+        }
     }
 
     #[inline]

@@ -3,7 +3,7 @@ use std::fmt::{Debug};
 use base64::{prelude::BASE64_STANDARD_NO_PAD, Engine};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, derive_more::From)]
-pub struct EntityId(usize);
+pub struct EntityId(pub(crate) usize);
 
 
 impl EntityId {

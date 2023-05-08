@@ -1,10 +1,11 @@
 // #![feature(associated_type_defaults)]
 // #![feature(never_type)]
 // #![feature(iter_collect_into)]
-#![feature(unboxed_closures)]
-#![feature(fn_traits)]
-#![feature(once_cell)]
+// #![feature(unboxed_closures)]
+// #![feature(fn_traits)]
+// #![feature(once_cell)]
 // #![feature(generic_const_exprs)]
+#![feature(maybe_uninit_uninit_array)]
 
 pub mod system;
 pub mod extract;
@@ -12,6 +13,7 @@ pub mod component;
 pub mod entity;
 pub mod container;
 pub mod universe;
+pub mod collections;
 
 pub use rayon;
 
