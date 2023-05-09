@@ -6,14 +6,15 @@
 // #![feature(once_cell)]
 // #![feature(generic_const_exprs)]
 #![feature(maybe_uninit_uninit_array)]
+#![feature(sync_unsafe_cell)]
 
-pub mod system;
-pub mod extract;
-pub mod component;
-pub mod entity;
-pub mod container;
-pub mod universe;
 pub mod collections;
+pub mod component;
+pub mod container;
+pub mod entity;
+pub mod extract;
+pub mod system;
+pub mod universe;
 
 pub use rayon;
 

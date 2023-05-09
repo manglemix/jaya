@@ -1,22 +1,34 @@
-use std::{ptr::NonNull, sync::{Arc, mpsc::{sync_channel, SyncSender, Receiver}, atomic::{AtomicBool, Ordering}}, thread::{Thread, current, park, available_parallelism}, hash::Hasher, num::NonZeroUsize};
+use std::{
+    hash::Hasher,
+    num::NonZeroUsize,
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{sync_channel, Receiver, SyncSender},
+        Arc,
+    },
+    thread::{available_parallelism, current, park, Thread},
+};
 
 use crossbeam::queue::SegQueue;
-use fxhash::{FxHashSet};
+use fxhash::FxHashSet;
 use hashers::jenkins::spooky_hash::SpookyHasher;
-use rayon::{prelude::{ParallelIterator, ParallelDrainRange, IntoParallelRefMutIterator}, spawn};
+use rayon::{
+    prelude::{IntoParallelRefMutIterator, ParallelDrainRange, ParallelIterator},
+    spawn,
+};
 
-use crate::component::{Component};
+use crate::component::Component;
 
-use super::{Query};
+use super::Query;
 
 const DEFAULT_MODIFIER_BUFFER_SIZE: usize = 1_000;
 const MULTI_MODIFIER_LIMIT: usize = 4;
 type PtrArray = [Option<NonNull<()>>; MULTI_MODIFIER_LIMIT];
 
-
 pub struct ComponentModifier {
     pub(super) ptr: NonNull<()>,
-    pub(super) f: Box<dyn FnOnce(NonNull<()>)>
+    pub(super) f: Box<dyn FnOnce(NonNull<()>)>,
 }
 
 // impl std::hash::Hash for ComponentModifier {
@@ -37,7 +49,7 @@ impl PartialEq for ComponentModifier {
 //     }
 // }
 
-impl Eq for ComponentModifier { }
+impl Eq for ComponentModifier {}
 
 // impl Ord for ComponentModifier {
 //     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -55,21 +67,21 @@ impl ComponentModifier {
     }
 }
 
-
-unsafe impl Send for ComponentModifier { }
-unsafe impl Sync for ComponentModifier { }
-
+unsafe impl Send for ComponentModifier {}
+unsafe impl Sync for ComponentModifier {}
 
 pub struct ComponentModifierStager {
     // modification_complete_count: Arc<AtomicUsize>,
     // mod_senders: Vec<SyncSender<MonoEnqueue>>,
     // buffer_filled: AtomicBool
-    modifiers: Box<[SegQueue<ComponentModifier>]>
+    modifiers: Box<[SegQueue<ComponentModifier>]>,
 }
 
 impl ComponentModifierStager {
     pub fn new() -> Self {
-        let parallel_count = available_parallelism().unwrap_or(NonZeroUsize::new(8).unwrap()).get();
+        let parallel_count = available_parallelism()
+            .unwrap_or(NonZeroUsize::new(8).unwrap())
+            .get();
         let mut modifiers = Vec::with_capacity(parallel_count);
 
         for _i in 0..parallel_count {
@@ -77,7 +89,7 @@ impl ComponentModifierStager {
         }
 
         Self {
-            modifiers: modifiers.into_boxed_slice()
+            modifiers: modifiers.into_boxed_slice(),
         }
     }
 
@@ -85,7 +97,7 @@ impl ComponentModifierStager {
         let mut hash = SpookyHasher::default();
         hash.write_usize(modifier.ptr.as_ptr() as usize);
         let hash = hash.finish() as usize;
-        
+
         self.modifiers
             .get(hash % self.modifiers.len())
             .unwrap()
@@ -94,37 +106,32 @@ impl ComponentModifierStager {
 
     pub unsafe fn execute(&mut self) {
         // println!("{:?}", self.modifiers.iter().map(|x| x.len()).collect::<Vec<_>>());
-        self.modifiers
-            .par_iter_mut()
-            .for_each(|queue| {
-                while let Some(modifier) = queue.pop() {
-                    modifier.execute();
-                }
-            });
+        self.modifiers.par_iter_mut().for_each(|queue| {
+            while let Some(modifier) = queue.pop() {
+                modifier.execute();
+            }
+        });
     }
 }
 
 #[derive(Default)]
 struct MultiModificationStage {
     ptrs: FxHashSet<usize>,
-    modifiers: Vec<MultiComponentModifier>
+    modifiers: Vec<MultiComponentModifier>,
 }
-
 
 enum MultiEnqueue {
     Modifier(MultiComponentModifier),
     Close(Thread),
-    Resize(Receiver<Self>)
+    Resize(Receiver<Self>),
 }
-
 
 pub struct MultiComponentModifierStager {
     modification_complete: Arc<AtomicBool>,
     mod_sender: SyncSender<MultiEnqueue>,
     buffer_size: usize,
-    buffer_filled: AtomicBool
+    buffer_filled: AtomicBool,
 }
-
 
 impl MultiComponentModifierStager {
     pub fn new() -> Self {
@@ -134,32 +141,27 @@ impl MultiComponentModifierStager {
 
         spawn(move || {
             let mut stages: Vec<MultiModificationStage> = Default::default();
-            
+
             'b: loop {
                 let Ok(x) = mod_recv.recv() else { break };
                 let modifier = match x {
                     MultiEnqueue::Resize(new_recv) => {
                         mod_recv = new_recv;
-                        continue
+                        continue;
                     }
                     MultiEnqueue::Modifier(x) => x,
                     MultiEnqueue::Close(thr) => {
                         // println!("{}", stages.iter().map(|x| x.modifiers.len()).sum::<usize>());
-                        stages
-                            .iter_mut()
-                            .for_each(|stage| {
-                                stage.ptrs.clear();
-                                stage
-                                    .modifiers
-                                    .par_drain(..)
-                                    .for_each(|x| unsafe {
-                                        x.execute();
-                                    });
+                        stages.iter_mut().for_each(|stage| {
+                            stage.ptrs.clear();
+                            stage.modifiers.par_drain(..).for_each(|x| unsafe {
+                                x.execute();
                             });
+                        });
 
                         mod_complete_cloned.store(true, Ordering::Release);
                         thr.unpark();
-                        continue
+                        continue;
                     }
                 };
 
@@ -170,15 +172,27 @@ impl MultiComponentModifierStager {
                         };
                         let ptr = ptr.as_ptr() as usize;
                         if stage.ptrs.contains(&ptr) {
-                            continue 'a
+                            continue 'a;
                         }
                     }
-                    stage.ptrs.extend(modifier.ptrs.into_iter().map_while(|x| x).map(|x| x.as_ptr() as usize));
+                    stage.ptrs.extend(
+                        modifier
+                            .ptrs
+                            .into_iter()
+                            .map_while(|x| x)
+                            .map(|x| x.as_ptr() as usize),
+                    );
                     stage.modifiers.push(modifier);
-                    continue 'b
+                    continue 'b;
                 }
                 let mut stage = MultiModificationStage::default();
-                stage.ptrs.extend(modifier.ptrs.into_iter().map_while(|x| x).map(|x| x.as_ptr() as usize));
+                stage.ptrs.extend(
+                    modifier
+                        .ptrs
+                        .into_iter()
+                        .map_while(|x| x)
+                        .map(|x| x.as_ptr() as usize),
+                );
                 stage.modifiers.push(modifier);
                 stages.push(stage);
             }
@@ -188,7 +202,7 @@ impl MultiComponentModifierStager {
             mod_sender,
             modification_complete,
             buffer_size: DEFAULT_MODIFIER_BUFFER_SIZE,
-            buffer_filled: Default::default()
+            buffer_filled: Default::default(),
         }
     }
 
@@ -197,14 +211,18 @@ impl MultiComponentModifierStager {
             let Err(err) = self.mod_sender.try_send(MultiEnqueue::Modifier(modifier)) else { return };
             self.buffer_filled.store(true, Ordering::Relaxed);
             match err {
-                std::sync::mpsc::TrySendError::Full(modifier) => self.mod_sender.send(modifier).unwrap_unchecked(),
-                _ => std::hint::unreachable_unchecked()
+                std::sync::mpsc::TrySendError::Full(modifier) => {
+                    self.mod_sender.send(modifier).unwrap_unchecked()
+                }
+                _ => std::hint::unreachable_unchecked(),
             }
         }
     }
 
     pub unsafe fn execute(&mut self) {
-        self.mod_sender.send(MultiEnqueue::Close(current())).unwrap_unchecked();
+        self.mod_sender
+            .send(MultiEnqueue::Close(current()))
+            .unwrap_unchecked();
 
         while !self.modification_complete.load(Ordering::Relaxed) {
             park();
@@ -215,7 +233,9 @@ impl MultiComponentModifierStager {
             self.buffer_size = self.buffer_size.saturating_mul(2);
             let (mod_sender, mod_recv) = sync_channel(self.buffer_size);
 
-            self.mod_sender.send(MultiEnqueue::Resize(mod_recv)).unwrap_unchecked();
+            self.mod_sender
+                .send(MultiEnqueue::Resize(mod_recv))
+                .unwrap_unchecked();
             self.mod_sender = mod_sender;
 
             self.buffer_filled.store(false, Ordering::Relaxed);
@@ -223,27 +243,23 @@ impl MultiComponentModifierStager {
     }
 }
 
-
 pub struct MultiComponentModifier {
     ptrs: PtrArray,
-    f: Box<dyn FnOnce(PtrArray)>
+    f: Box<dyn FnOnce(PtrArray)>,
 }
 
-
-unsafe impl Send for MultiComponentModifier { }
-unsafe impl Sync for MultiComponentModifier { }
-
+unsafe impl Send for MultiComponentModifier {}
+unsafe impl Sync for MultiComponentModifier {}
 
 impl MultiComponentModifier {
     pub fn get_ptrs(&self) -> PtrArray {
         self.ptrs
     }
-    
+
     pub unsafe fn execute(self) {
         (self.f)(self.ptrs)
     }
 }
-
 
 pub trait MultiQuery {
     type Arguments;
@@ -251,29 +267,28 @@ pub trait MultiQuery {
     fn queue_mut(self, f: impl FnOnce(Self::Arguments) + 'static);
 }
 
-
 impl<'a, C1, C2> MultiQuery for (Query<'a, C1>, Query<'a, C2>)
 where
     C1: Component + 'a,
-    C2: Component + 'a
+    C2: Component + 'a,
 {
     type Arguments = (&'a mut C1, &'a mut C2);
 
     fn queue_mut(self, f: impl FnOnce(Self::Arguments) + 'static) {
-        self
-            .0
+        self.0
             .universe
-            .queue_multi_component_modifier(
-                MultiComponentModifier {
-                    ptrs: [Some(NonNull::from(self.0.component).cast()), Some(NonNull::from(self.1.component).cast()), None, None],
-                    f: Box::new(
-                        |[ptr1, ptr2, _, _]| unsafe {
-                            let mut ptr1 = ptr1.unwrap_unchecked().cast::<C1>();
-                            let mut ptr2 = ptr2.unwrap_unchecked().cast::<C2>();
-                            (f)((ptr1.as_mut(), ptr2.as_mut()))
-                        }
-                    )
-                }
-            )
+            .queue_multi_component_modifier(MultiComponentModifier {
+                ptrs: [
+                    Some(NonNull::from(self.0.component).cast()),
+                    Some(NonNull::from(self.1.component).cast()),
+                    None,
+                    None,
+                ],
+                f: Box::new(|[ptr1, ptr2, _, _]| unsafe {
+                    let mut ptr1 = ptr1.unwrap_unchecked().cast::<C1>();
+                    let mut ptr2 = ptr2.unwrap_unchecked().cast::<C2>();
+                    (f)((ptr1.as_mut(), ptr2.as_mut()))
+                }),
+            })
     }
 }

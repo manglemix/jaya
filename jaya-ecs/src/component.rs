@@ -1,5 +1,4 @@
-use crate::{entity::EntityId};
-
+use crate::entity::EntityId;
 
 pub trait Component: Sync {}
 
