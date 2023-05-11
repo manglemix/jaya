@@ -3,9 +3,9 @@ use std::{ops::Deref, ptr::NonNull};
 mod subextract;
 
 use crate::{
-    component::{Component, IntoComponentIterator},
+    component::{Component},
     entity::EntityId,
-    universe::Universe,
+    universe::{Universe, AsSubState},
 };
 
 pub use subextract::{
@@ -14,7 +14,7 @@ pub use subextract::{
 };
 
 pub trait FromUniverse<'a, S>: Send + Clone + 'a {
-    fn iter_choices<F>(universe: &'a S, f: F)
+    fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
         F: Fn(Self) + Sync;
 }
@@ -27,20 +27,39 @@ impl<'a, T: Sync> Clone for State<'a, T> {
     }
 }
 
-impl<'a, T: Sync> Copy for State<'a, T> {}
+impl<'a, T: Sync> Copy for State<'a, T> { }
 
 impl<'a, T, S> FromUniverse<'a, S> for State<'a, T>
 where
     T: Sync + 'a,
-    S: AsRef<T>,
+    S: AsSubState<T>
 {
-    fn iter_choices<F>(universe: &'a S, f: F)
+    fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
         F: Fn(Self) + Sync,
     {
-        (f)(State(universe.as_ref()))
+        (f)(State(universe.get_extension().as_sub_state()))
     }
 }
+
+trait UniverseRef: Sync {
+    fn queue_component_modifier(&self, modifier: ComponentModifier);
+    fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier);
+}
+
+
+impl<S: Sync> UniverseRef for Universe<S> {
+    #[inline(always)]
+    fn queue_component_modifier(&self, modifier: ComponentModifier) {
+        Universe::queue_component_modifier(self, modifier);
+    }
+
+    #[inline(always)]
+    fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier) {
+        Universe::queue_multi_component_modifier(self, modifier);
+    }
+}
+
 
 pub struct Query<'a, T>
 where
@@ -48,7 +67,7 @@ where
 {
     id: EntityId,
     component: &'a T,
-    universe: &'a (dyn Universe),
+    universe: &'a (dyn UniverseRef),
 }
 
 impl<'a, T> PartialEq for Query<'a, T>
@@ -86,10 +105,10 @@ where
 
 impl<'a, T, S> FromUniverse<'a, S> for Query<'a, T>
 where
-    T: Component + 'a,
-    S: IntoComponentIterator<T> + Universe,
+    T: Component + 'static,
+    S: Sync
 {
-    fn iter_choices<F>(universe: &'a S, f: F)
+    fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
         F: Fn(Self) + Sync,
     {
@@ -98,7 +117,7 @@ where
                 id,
                 component,
                 universe,
-            })
+            });
         });
     }
 }
@@ -118,19 +137,17 @@ where
     }
 }
 
-impl<'a, S: Universe> FromUniverse<'a, S> for &'a S {
-    fn iter_choices<F>(universe: &'a S, f: F)
-    where
-        F: Fn(Self) + Sync,
-    {
-        (f)(universe)
-    }
-}
+// impl<'a, S: Sync> FromUniverse<'a, S> for &'a S {
+//     fn iter_choices<F>(universe: &'a Universe<S>, f: F)
+//     where
+//         F: Fn(Self) + Sync,
+//     {
+//         (f)(&universe.get_extension())
+//     }
+// }
 
-pub type AnyUniverse<'a> = &'a dyn Universe;
-
-impl<'a, S: Universe> FromUniverse<'a, S> for AnyUniverse<'a> {
-    fn iter_choices<F>(universe: &'a S, f: F)
+impl<'a, S: Sync> FromUniverse<'a, S> for &'a Universe<S> {
+    fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
         F: Fn(Self) + Sync,
     {
@@ -140,10 +157,10 @@ impl<'a, S: Universe> FromUniverse<'a, S> for AnyUniverse<'a> {
 
 impl<'a, T, S, const N: usize> FromUniverse<'a, S> for [Query<'a, T>; N]
 where
-    T: Component + 'a,
-    S: IntoComponentIterator<T> + Universe,
+    T: Component + 'static,
+    S: Sync
 {
-    fn iter_choices<F>(universe: &'a S, f: F)
+    fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
         F: Fn(Self) + Sync,
     {

@@ -77,6 +77,12 @@ pub struct ComponentModifierStager {
     modifiers: Box<[SegQueue<ComponentModifier>]>,
 }
 
+impl Default for ComponentModifierStager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComponentModifierStager {
     pub fn new() -> Self {
         let parallel_count = available_parallelism()
@@ -240,6 +246,12 @@ impl MultiComponentModifierStager {
 
             self.buffer_filled.store(false, Ordering::Relaxed);
         }
+    }
+}
+
+impl Default for MultiComponentModifierStager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

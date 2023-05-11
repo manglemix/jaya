@@ -11,4 +11,7 @@ derive_more = "0.99.17"
 delegate = "0.9.0"
 
 [profile.release]
-debug = true
+lto = "thin"
+
+[profile.dev]
+opt-level = 3

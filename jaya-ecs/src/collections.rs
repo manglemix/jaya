@@ -4,9 +4,9 @@ use std::{
     hint::unreachable_unchecked,
     marker::PhantomData,
     mem::{forget, size_of, MaybeUninit},
-    ops::Deref,
+    num::NonZeroUsize,
     ptr::{copy_nonoverlapping, drop_in_place},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering}, num::NonZeroUsize,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering}, fmt::Debug,
 };
 
 use crossbeam::utils::Backoff;
@@ -15,16 +15,30 @@ use rayon::{
     slice::ParallelSlice,
 };
 
+
+#[derive(derive_more::From, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PushError<T>(pub T);
+
+impl<T> Debug for PushError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Incorrect type on push to AnyVec")
+    }
+}
+
 const DEFAULT_BLOCK_SIZE: usize = 32;
 const BLOCK_GROWTH_RATE: usize = 2;
 
-pub struct AnyVec {
-    bytes: SyncUnsafeCell<Vec<Box<[u8]>>>,
+/// A vector of elements whose type is not statically verified (notice no generic parameter for the type)
+/// 
+/// On top of this feature, `AnyVec` can be extended and iterated through concurrently, and removals can happen concurrently (but not all three at once)
+pub(crate) struct AnyVec {
+    bytes: SyncUnsafeCell<Vec<SyncUnsafeCell<Box<[u8]>>>>,
     maybe_init_len: AtomicUsize,
     init_len: AtomicUsize,
     resizing: AtomicBool,
     type_id: TypeId,
-    dropper: fn(&mut Self)
+    dropper: fn(*mut u8),
+    element_size: usize
 }
 
 impl AnyVec {
@@ -36,50 +50,57 @@ impl AnyVec {
         let capacity = capacity.get();
         let block = vec![0u8; capacity * size_of::<T>()];
         Self {
-            bytes: SyncUnsafeCell::new(vec![block.into_boxed_slice()]),
+            bytes: SyncUnsafeCell::new(vec![SyncUnsafeCell::new(block.into_boxed_slice())]),
             resizing: Default::default(),
             maybe_init_len: Default::default(),
             type_id: TypeId::of::<T>(),
             init_len: Default::default(),
-            dropper: |mutref| unsafe {
-                debug_assert_eq!(mutref.init_len.get_mut(), mutref.maybe_init_len.get_mut());
-                let mut init_len = *mutref.init_len.get_mut();
-
-                for block in mutref.bytes.get_mut() {
-                    let ptr: *mut u8 = block.get_unchecked_mut(0);
-                    let ptr: *mut T = ptr.cast();
-
-                    for i in 0..(block.len() / size_of::<T>()) {
-                        drop_in_place(ptr.offset(i as isize));
-                        init_len -= 1;
-                        if init_len == 0 {
-                            return
-                        }
-                    }
-                }
+            dropper: |ptr| unsafe {
+                drop_in_place::<T>(ptr.cast());
             },
+            element_size: size_of::<T>()
         }
     }
 
-    pub fn get<T: 'static>(&self, index: usize) -> Option<&T> {
-        if TypeId::of::<T>() != self.type_id {
-            return None;
+    /// # Safety
+    /// Behaviour is undefined if any of the following isn't true
+    /// 1. `ptr` must be a pointer inside of `self`
+    /// 2. `size` must be the actual size of the type stored in `self`
+    /// 3. `self` must not be empty
+    /// 4. There must not be any thread that is concurrently adding elements
+    /// 5. `ptr` must not currently be used. This includes calls to this method. (ie. Do not use the same `ptr` to this method concurrently)
+    /// 6. `ptr` must point to a valid object that is of the same type that `self` is initialized for
+    pub unsafe fn swap_remove_by_ptr(&self, ptr: *mut u8) -> bool {
+        (self.dropper)(ptr);
+        let current_len = self.init_len.fetch_sub(1, Ordering::Relaxed) - 1;
+        self.maybe_init_len.fetch_sub(1, Ordering::Relaxed);
+        let last_ptr = self.get_bytes_ptr_manually(current_len, self.element_size);
+        if last_ptr == ptr {
+            return false
         }
-
-        if index >= self.init_len.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        unsafe {
-            let ptr = AnyVec::get_bytes_ptr::<T>(index, &(*self.bytes.get()));
-            Some(&(*ptr.cast()))
-        }
+        copy_nonoverlapping(last_ptr, ptr, self.element_size);
+        true
     }
+
+    // pub fn get<T: 'static>(&self, index: usize) -> Option<&T> {
+    //     if TypeId::of::<T>() != self.type_id {
+    //         return None;
+    //     }
+
+    //     if index >= self.init_len.load(Ordering::Relaxed) {
+    //         return None;
+    //     }
+
+    //     unsafe {
+    //         let ptr = AnyVec::get_bytes_ptr::<T>(index, &(*self.bytes.get()));
+    //         Some(&(*ptr.cast()))
+    //     }
+    // }
 
     #[must_use]
-    pub fn push<T: Send + Sync + 'static>(&self, value: T) -> Option<T> {
+    pub fn push<T: Send + Sync + 'static>(&self, value: T) -> Result<*mut u8, PushError<T>> {
         if TypeId::of::<T>() != self.type_id {
-            return Some(value);
+            return Err(value.into());
         }
 
         let t_size = size_of::<T>();
@@ -92,9 +113,9 @@ impl AnyVec {
             let last_block_len;
 
             {
-                let reader = unsafe { &(*self.bytes.get()) };
+                let blocks = unsafe { &(*self.bytes.get()) };
 
-                if current_len >= Self::get_capacity::<T>(reader.deref()) {
+                if current_len >= self.get_capacity::<T>() {
                     let last_resizing_value = self.resizing.swap(true, Ordering::Acquire);
                     if last_resizing_value {
                         // another thread is already resizing
@@ -102,10 +123,11 @@ impl AnyVec {
                         continue;
                     }
                     last_block_len =
-                        unsafe { reader.last().unwrap_unchecked().len() * BLOCK_GROWTH_RATE };
+                        unsafe { (*blocks.last().unwrap_unchecked().get()).len() * BLOCK_GROWTH_RATE };
                 } else {
+                    let start_ptr;
                     unsafe {
-                        let start_ptr = Self::get_bytes_ptr::<T>(current_len - 1, &reader);
+                        start_ptr = self.get_bytes_ptr::<T>(current_len - 1);
                         copy_nonoverlapping(t_ptr, start_ptr, t_size);
                     }
                     forget(value);
@@ -115,11 +137,11 @@ impl AnyVec {
                         backoff.snooze();
                     }
                     self.init_len.fetch_add(1, Ordering::Relaxed);
-                    break;
+                    break Ok(start_ptr);
                 }
             }
 
-            let new_block = vec![0u8; last_block_len].into_boxed_slice();
+            let new_block = SyncUnsafeCell::new(vec![0u8; last_block_len].into_boxed_slice());
 
             unsafe {
                 (&mut (*self.bytes.get())).push(new_block);
@@ -127,35 +149,47 @@ impl AnyVec {
 
             self.resizing.store(false, Ordering::Release);
         }
-
-        None
     }
 
-    pub fn par_iter<'a, T, F>(&'a self, f: F) -> bool
+    pub fn par_iter<'a, T>(&'a self) -> Option<impl ParallelIterator<Item = &'a T>>
     where
-        T: 'static,
-        F: Fn(&T) + Sync,
+        T: Sync + 'static,
     {
         if TypeId::of::<T>() != self.type_id {
-            return false;
+            return None;
         }
+        let init_len = self.init_len.load(Ordering::Relaxed);
         unsafe {
-            (&(*self.bytes.get())).par_iter().for_each(|block| {
-                block.par_chunks_exact(size_of::<T>()).for_each(|ptr| {
-                    let ptr: *const u8 = ptr.get(0).unwrap();
-                    let ptr: *const T = ptr.cast();
-                    (f)(ptr.as_ref().unwrap())
-                });
-            });
-        }
+            Some(
+                (&(*self.bytes.get()))
+                    .par_iter()
+                    .enumerate()
+                    .map(move |(i, block)| {
+                        let block = &(*block.get());
+                        let start_index =
+                            (block.len() as f64 * (1.0 - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64))) as usize / size_of::<T>();
 
-        true
+                        block
+                            .par_chunks_exact(size_of::<T>())
+                            .enumerate()
+                            .filter_map(move |(j, ptr)| {
+                                if start_index + j >= init_len {
+                                    return None
+                                }
+                                let ptr: *const T = ptr.as_ptr().cast();
+                                Some(&(*ptr))
+                            })
+                        }
+                    )
+                    .flatten(),
+            )
+        }
     }
 
     pub fn par_iter_combinations<'a, T, F, const N: usize>(&'a self, f: F) -> bool
     where
         T: Sync + 'static,
-        F: Fn([&T; N]) + Sync,
+        F: Fn([&'a T; N]) + Sync,
     {
         if N == 0 {
             return true;
@@ -167,8 +201,9 @@ impl AnyVec {
             .par_iter()
             .enumerate()
             .map(|(i, block)| {
+                let block = unsafe { &(*block.get()) };
                 let start_index =
-                    (block.len() as f64 - 0.5f64.powi(i.try_into().unwrap())) as usize;
+                    (block.len() as f64 * (1.0 - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64))) as usize / size_of::<T>();
                 block
                     .par_chunks_exact(size_of::<T>())
                     .enumerate()
@@ -181,11 +216,11 @@ impl AnyVec {
             .flatten()
             .for_each(|(i, x)| {
                 assert!(N <= 2);
-                for j in i..init_len {
+                for j in (i + 1)..init_len {
                     let mut arr = MaybeUninit::<&T>::uninit_array::<N>();
                     arr[0].write(x);
                     unsafe {
-                        let ptr = AnyVec::get_bytes_ptr::<T>(j, bytes);
+                        let ptr = self.get_bytes_ptr::<T>(j);
                         arr[1].write(&(*ptr.cast()));
                     }
                     (f)(arr.map(|x| unsafe { x.assume_init() }))
@@ -195,6 +230,7 @@ impl AnyVec {
         true
     }
 
+    #[cfg(test)]
     pub fn iter<T: 'static>(&self) -> AnyVecIter<T> {
         // if self.mut_iterating.load(Ordering::Relaxed) {
         //     return None
@@ -206,7 +242,7 @@ impl AnyVec {
                 0
             },
             current_index: 0,
-            vec_ref: unsafe { &(*self.bytes.get()) },
+            vec_ref: self,
             _phantom: Default::default(),
         }
     }
@@ -257,22 +293,31 @@ impl AnyVec {
     //     None
     // }
 
-    fn get_capacity<T>(blocks: &[Box<[u8]>]) -> usize {
-        blocks
+    fn get_capacity<T>(&self) -> usize {
+        self.get_capacity_manual(size_of::<T>())
+    }
+
+    fn get_capacity_manual(&self, t_size: usize) -> usize {
+        unsafe { &(*self.bytes.get()) }
             .into_iter()
-            .map(|block| block.len() / size_of::<T>())
+            .map(|block| unsafe { (*block.get()).len() } / t_size)
             .sum()
     }
 
-    unsafe fn get_bytes_ptr<T>(mut index: usize, blocks: &[Box<[u8]>]) -> *mut u8 {
-        debug_assert!(index < Self::get_capacity::<T>(blocks));
-        let t_size = size_of::<T>();
-        index = index.checked_mul(t_size).unwrap();
+    unsafe fn get_bytes_ptr<T>(&self, index: usize) -> *mut u8 {
+        self.get_bytes_ptr_manually(index, size_of::<T>())
+    }
+
+    unsafe fn get_bytes_ptr_manually(&self, mut index: usize, t_size: usize) -> *mut u8 {
+        let blocks = unsafe { &(*self.bytes.get()) };
+
+        debug_assert!(index < self.get_capacity_manual(t_size));
+        index *= t_size;
         for block in blocks {
+            let block = unsafe { &mut (*block.get()) };
             debug_assert!(block.len() % t_size == 0);
-            if let Some(x) = block.get(index) {
-                let x: *const _ = x;
-                return x.cast_mut();
+            if let Some(x) = block.get_mut(index) {
+                return x;
             }
             index -= block.len();
         }
@@ -280,8 +325,32 @@ impl AnyVec {
     }
 }
 
+impl Drop for AnyVec {
+    fn drop(&mut self) {
+        debug_assert_eq!(self.init_len.get_mut(), self.maybe_init_len.get_mut());
+        let mut init_len = *self.init_len.get_mut();
+        if init_len == 0 {
+            return
+        }
+
+        for block in self.bytes.get_mut() {
+            let ptr = block.get_mut().as_mut_ptr();
+
+            for i in 0..(block.get_mut().len() / self.element_size) {
+                unsafe {
+                    (self.dropper)(ptr.offset(i as isize));
+                }
+                init_len -= 1;
+                if init_len == 0 {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 pub struct AnyVecIter<'a, T> {
-    vec_ref: &'a [Box<[u8]>],
+    vec_ref: &'a AnyVec,
     len: usize,
     current_index: usize,
     _phantom: PhantomData<T>,
@@ -296,55 +365,20 @@ impl<'a, T: 'a> Iterator for AnyVecIter<'a, T> {
         }
 
         unsafe {
-            let ptr = AnyVec::get_bytes_ptr::<T>(self.current_index, &self.vec_ref);
+            let ptr = self.vec_ref.get_bytes_ptr::<T>(self.current_index);
             self.current_index += 1;
             Some(&(*ptr.cast()))
         }
     }
 }
 
-impl Drop for AnyVec {
-    fn drop(&mut self) {
-        (self.dropper)(self);
-    }
-}
-
-// pub struct AnyVecIterMut<'a, T> {
-//     vec_ref: &'a [Box<[u8]>],
-//     len: usize,
-//     current_index: usize,
-//     mut_iterating: &'a AtomicBool,
-//     _phantom: PhantomData<T>
-// }
-
-// impl<'a, T: 'a> Iterator for AnyVecIterMut<'a, T> {
-//     type Item = &'a mut T;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.current_index >= self.len {
-//             return None
-//         }
-
-//         unsafe {
-//             let ptr = AnyVec::get_bytes_ptr::<T>(self.current_index, &self.vec_ref);
-//             self.current_index += 1;
-//             Some(&mut (*ptr.cast()))
-//         }
-//     }
-// }
-
-// impl<'a, T> Drop for AnyVecIterMut<'a, T> {
-//     fn drop(&mut self) {
-//         self.mut_iterating.store(false, Ordering::Relaxed);
-//     }
-// }
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashSet, ops::Deref, sync::Arc};
 
-    use itertools::Itertools;
     use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+
+    use crate::collections::PushError;
 
     use super::AnyVec;
 
@@ -353,45 +387,62 @@ mod tests {
         let vec = AnyVec::new::<usize>();
 
         (0..500usize).into_iter().for_each(|n| {
-            assert_eq!(vec.push(n), None);
+            assert!(vec.push(n).is_ok());
         });
 
-        assert_eq!(vec.push(13u8), Some(13u8));
+        assert_eq!(vec.push(13u8), Err(PushError(13u8)));
         assert_eq!(
-            vec.iter::<usize>().cloned().collect_vec(),
-            (0..500).into_iter().collect_vec()
+            vec.iter::<usize>().cloned().collect::<Vec<_>>(),
+            (0..500usize).into_iter().collect::<Vec<_>>()
         );
         assert_eq!(vec.iter::<i8>().next(), None);
     }
+
     #[test]
     fn par_test01() {
         let vec = AnyVec::new::<usize>();
 
         (0..500usize).into_par_iter().for_each(|n| {
-            assert_eq!(vec.push(n), None);
+            assert!(vec.push(n).is_ok());
         });
 
-        assert_eq!(vec.push(13u8), Some(13u8));
+        assert_eq!(vec.push(13u8), Err(PushError(13u8)));
         assert_eq!(
-            vec.iter::<usize>()
-                .cloned()
-                .collect::<HashSet<usize>>(),
+            vec.iter::<usize>().cloned().collect::<HashSet<usize>>(),
             (0..500).into_iter().collect::<HashSet<usize>>()
         );
         assert_eq!(vec.iter::<i8>().next(), None);
     }
+
     #[test]
     fn arc_test01() {
         let vec = AnyVec::new::<Arc<(u8, u64, i128)>>();
         let arc = Arc::new((0u8, 2u64, 56i128));
         let weak = Arc::downgrade(&arc);
-        assert_eq!(vec.push(arc), None);
+        assert!(vec.push(arc).is_ok());
 
         let arc = weak.upgrade().unwrap();
         assert_eq!(arc.deref(), &(0, 2, 56));
         drop(arc);
         assert_eq!(weak.strong_count(), 1);
         drop(vec);
+        assert_eq!(weak.strong_count(), 0);
+    }
+
+    #[test]
+    fn arc_test02() {
+        let vec = AnyVec::new::<Arc<(u8, u64, i128)>>();
+        let arc = Arc::new((0u8, 2u64, 56i128));
+        let weak = Arc::downgrade(&arc);
+        let arc_ptr = vec.push(arc).unwrap();
+
+        let arc = weak.upgrade().unwrap();
+        assert_eq!(arc.deref(), &(0, 2, 56));
+        drop(arc);
+        assert_eq!(weak.strong_count(), 1);
+        unsafe {
+            assert!(!vec.swap_remove_by_ptr(arc_ptr))
+        }
         assert_eq!(weak.strong_count(), 0);
     }
 }

@@ -2,22 +2,22 @@ use rayon::join;
 
 use crate::{extract::FromUniverse, universe::Universe};
 
-pub trait System<'a, T, S: Universe> {
-    fn run_once(&self, universe: &'a S);
+pub trait System<'a, T, S> {
+    fn run_once(&self, universe: &'a Universe<S>);
 }
 
-impl<'a, T: Fn(), S: Universe> System<'a, (), S> for T {
-    fn run_once(&self, _universe: &'a S) {
+impl<'a, T: Fn(), S> System<'a, (), S> for T {
+    fn run_once(&self, _universe: &'a Universe<S>) {
         (self)()
     }
 }
 
-impl<'a, A1, T, S: Universe> System<'a, (A1,), S> for T
+impl<'a, A1, T, S> System<'a, (A1,), S> for T
 where
     T: Fn(A1) + Sync,
     A1: FromUniverse<'a, S>,
 {
-    fn run_once(&self, universe: &'a S) {
+    fn run_once(&self, universe: &'a Universe<S>) {
         A1::iter_choices(universe, self);
     }
 }
@@ -27,9 +27,9 @@ where
     T: Fn(A1, A2) + Sync,
     A1: FromUniverse<'a, S> + Sync,
     A2: FromUniverse<'a, S>,
-    S: Universe,
+    S: Sync
 {
-    fn run_once(&self, universe: &'a S) {
+    fn run_once(&self, universe: &'a Universe<S>) {
         A1::iter_choices(universe, |c1| {
             A2::iter_choices(universe, |c2| (self)(c1.clone(), c2))
         });
@@ -38,11 +38,11 @@ where
 
 impl<'a, S, A1, A2, C1, C2> System<'a, (A1, A2), S> for (C1, C2)
 where
-    S: Universe,
     C1: System<'a, A1, S> + Sync,
     C2: System<'a, A2, S> + Sync,
+    S: Sync
 {
-    fn run_once(&self, universe: &'a S) {
+    fn run_once(&self, universe: &'a Universe<S>) {
         join(
             || {
                 self.0.run_once(universe);
