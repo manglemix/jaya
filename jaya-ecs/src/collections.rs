@@ -334,11 +334,12 @@ impl Drop for AnyVec {
         }
 
         for block in self.bytes.get_mut() {
-            let ptr = block.get_mut().as_mut_ptr();
+            let block = block.get_mut();
+            let ptr = block.as_mut_ptr();
 
-            for i in 0..(block.get_mut().len() / self.element_size) {
+            for i in 0..(block.len() / self.element_size) {
                 unsafe {
-                    (self.dropper)(ptr.offset(i as isize));
+                    (self.dropper)(ptr.offset((self.element_size * i) as isize));
                 }
                 init_len -= 1;
                 if init_len == 0 {
