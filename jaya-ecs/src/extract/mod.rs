@@ -4,17 +4,14 @@ use std::{ops::Deref, ptr::NonNull};
 mod subextract;
 
 use crate::{
-    component::{Component},
+    component::Component,
     entity::EntityId,
-    universe::{Universe, AsSubState},
+    universe::{AsSubState, Universe},
 };
 
-pub use subextract::{
-    ComponentModifierStager,
-    MultiComponentModifierStager, MultiQuery,
-};
+pub use subextract::{ComponentModifierStager, MultiComponentModifierStager, MultiQuery};
 
-pub(crate) use self::subextract::{MultiComponentModifier, ComponentModifier};
+pub(crate) use self::subextract::{ComponentModifier, MultiComponentModifier};
 
 /// A trait for structs that can be produced from a `Universe`
 pub trait FromUniverse<'a, S>: Send + Clone + 'a {
@@ -33,12 +30,12 @@ impl<'a, T: Sync> Clone for State<'a, T> {
     }
 }
 
-impl<'a, T: Sync> Copy for State<'a, T> { }
+impl<'a, T: Sync> Copy for State<'a, T> {}
 
 impl<'a, T, S> FromUniverse<'a, S> for State<'a, T>
 where
     T: Sync + 'a,
-    S: AsSubState<T>
+    S: AsSubState<T>,
 {
     fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
@@ -52,7 +49,6 @@ trait UniverseRef: Sync {
     fn queue_component_modifier(&self, modifier: ComponentModifier);
     fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier);
 }
-
 
 impl<S: Sync> UniverseRef for Universe<S> {
     #[inline(always)]
@@ -112,7 +108,7 @@ where
 impl<'a, T, S> FromUniverse<'a, S> for Query<'a, T>
 where
     T: Component + 'static,
-    S: Sync
+    S: Sync,
 {
     fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where
@@ -137,15 +133,15 @@ where
         self.id
     }
     /// Queues a modification for this `Component`
-    /// 
+    ///
     /// This is the fastest way to modify a `Component`, but it only allows
     /// for one mutable reference to one `Component` at a time. If you need
     /// to have multiple mutable references, combine the queries for the
     /// components you wish to modify into a tuple and use that instead.
-    /// 
+    ///
     /// Do keep in mind that this approach is *far* slower, so do not hesitate
     /// to break up a modification into multiple individual modifiers.
-    /// 
+    ///
     /// Modifications will *never* be ran immediately.
     pub fn queue_mut(&self, f: impl FnOnce(&mut T) + 'static) {
         self.universe.queue_component_modifier(ComponentModifier {
@@ -167,7 +163,7 @@ impl<'a, S: Sync> FromUniverse<'a, S> for &'a Universe<S> {
 impl<'a, T, S, const N: usize> FromUniverse<'a, S> for [Query<'a, T>; N]
 where
     T: Component + 'static,
-    S: Sync
+    S: Sync,
 {
     fn iter_choices<F>(universe: &'a Universe<S>, f: F)
     where

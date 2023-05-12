@@ -3,7 +3,7 @@ use rayon::join;
 use crate::{extract::FromUniverse, universe::Universe};
 
 /// A System is some operation on one or more components and states
-/// 
+///
 /// All thread safe functions which return `()`, and whose parameters
 /// implement `FromUniverse`, implements `System`. Due to implementation limitations,
 /// only functions with up to three parameters are Systems.
@@ -32,7 +32,7 @@ where
     T: Fn(A1, A2) + Sync,
     A1: FromUniverse<'a, S> + Sync,
     A2: FromUniverse<'a, S>,
-    S: Sync
+    S: Sync,
 {
     fn run_once(&self, universe: &'a Universe<S>) {
         A1::iter_choices(universe, |c1| {
@@ -45,7 +45,7 @@ impl<'a, S, A1, A2, C1, C2> System<'a, (A1, A2), S> for (C1, C2)
 where
     C1: System<'a, A1, S> + Sync,
     C2: System<'a, A2, S> + Sync,
-    S: Sync
+    S: Sync,
 {
     fn run_once(&self, universe: &'a Universe<S>) {
         join(
@@ -64,7 +64,7 @@ where
     C1: System<'a, A1, S> + Sync,
     C2: System<'a, A2, S> + Sync,
     C3: System<'a, A3, S> + Sync,
-    S: Sync
+    S: Sync,
 {
     fn run_once(&self, universe: &'a Universe<S>) {
         join(
@@ -78,7 +78,7 @@ where
                     },
                     || {
                         self.2.run_once(universe);
-                    }
+                    },
                 )
             },
         );

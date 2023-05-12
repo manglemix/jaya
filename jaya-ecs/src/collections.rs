@@ -1,12 +1,13 @@
 use std::{
     any::TypeId,
     cell::SyncUnsafeCell,
+    fmt::Debug,
     hint::unreachable_unchecked,
     marker::PhantomData,
     mem::{forget, size_of, MaybeUninit},
     num::NonZeroUsize,
     ptr::{copy_nonoverlapping, drop_in_place},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering}, fmt::Debug,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use crossbeam::utils::Backoff;
@@ -14,7 +15,6 @@ use rayon::{
     prelude::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator},
     slice::ParallelSlice,
 };
-
 
 #[derive(derive_more::From, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PushError<T>(pub T);
@@ -29,7 +29,7 @@ const DEFAULT_BLOCK_SIZE: usize = 32;
 const BLOCK_GROWTH_RATE: usize = 2;
 
 /// A vector of elements whose type is not statically verified (notice no generic parameter for the type)
-/// 
+///
 /// On top of this feature, `AnyVec` can be extended and iterated through concurrently, and removals can happen concurrently (but not all three at once)
 pub(crate) struct AnyVec {
     bytes: SyncUnsafeCell<Vec<SyncUnsafeCell<Box<[u8]>>>>,
@@ -38,7 +38,7 @@ pub(crate) struct AnyVec {
     resizing: AtomicBool,
     type_id: TypeId,
     dropper: fn(*mut u8),
-    element_size: usize
+    element_size: usize,
 }
 
 impl AnyVec {
@@ -58,7 +58,7 @@ impl AnyVec {
             dropper: |ptr| unsafe {
                 drop_in_place::<T>(ptr.cast());
             },
-            element_size: size_of::<T>()
+            element_size: size_of::<T>(),
         }
     }
 
@@ -70,7 +70,7 @@ impl AnyVec {
     /// 4. There must not be any thread that is concurrently adding elements
     /// 5. `ptr` must not currently be used. This includes calls to this method. (ie. Do not use the same `ptr` to this method concurrently)
     /// 6. `ptr` must point to a valid object that is of the same type that `self` is initialized for
-    /// 
+    ///
     /// # Programmer's Note
     /// This is probably the most unsafe function I've written
     pub unsafe fn swap_remove_by_ptr(&self, ptr: *mut u8) -> bool {
@@ -79,7 +79,7 @@ impl AnyVec {
         self.maybe_init_len.fetch_sub(1, Ordering::Relaxed);
         let last_ptr = self.get_bytes_ptr_manually(current_len, self.element_size);
         if last_ptr == ptr {
-            return false
+            return false;
         }
         copy_nonoverlapping(last_ptr, ptr, self.element_size);
         true
@@ -101,7 +101,7 @@ impl AnyVec {
     // }
 
     /// Pushes the given value onto the `self`
-    /// 
+    ///
     /// If the type of the given value is the type that this vector was initialized for, then `Ok`
     /// is returned containing a bytes ptr to where the value is stored. Otherwise, `Err` is returned
     /// containing the given value.
@@ -130,8 +130,9 @@ impl AnyVec {
                         backoff.snooze();
                         continue;
                     }
-                    last_block_len =
-                        unsafe { (*blocks.last().unwrap_unchecked().get()).len() * BLOCK_GROWTH_RATE };
+                    last_block_len = unsafe {
+                        (*blocks.last().unwrap_unchecked().get()).len() * BLOCK_GROWTH_RATE
+                    };
                 } else {
                     let start_ptr;
                     unsafe {
@@ -174,21 +175,23 @@ impl AnyVec {
                     .enumerate()
                     .map(move |(i, block)| {
                         let block = &(*block.get());
-                        let start_index =
-                            (block.len() as f64 * (1.0 - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64))) as usize / size_of::<T>();
+                        let start_index = (block.len() as f64
+                            * (1.0
+                                - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64)))
+                            as usize
+                            / size_of::<T>();
 
                         block
                             .par_chunks_exact(size_of::<T>())
                             .enumerate()
                             .filter_map(move |(j, ptr)| {
                                 if start_index + j >= init_len {
-                                    return None
+                                    return None;
                                 }
                                 let ptr: *const T = ptr.as_ptr().cast();
                                 Some(&(*ptr))
                             })
-                        }
-                    )
+                    })
                     .flatten(),
             )
         }
@@ -210,8 +213,10 @@ impl AnyVec {
             .enumerate()
             .map(|(i, block)| {
                 let block = unsafe { &(*block.get()) };
-                let start_index =
-                    (block.len() as f64 * (1.0 - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64))) as usize / size_of::<T>();
+                let start_index = (block.len() as f64
+                    * (1.0 - (1.0f64 / BLOCK_GROWTH_RATE.pow(i.try_into().unwrap()) as f64)))
+                    as usize
+                    / size_of::<T>();
                 block
                     .par_chunks_exact(size_of::<T>())
                     .enumerate()
@@ -338,7 +343,7 @@ impl Drop for AnyVec {
         debug_assert_eq!(self.init_len.get_mut(), self.maybe_init_len.get_mut());
         let mut init_len = *self.init_len.get_mut();
         if init_len == 0 {
-            return
+            return;
         }
 
         for block in self.bytes.get_mut() {
@@ -449,9 +454,7 @@ mod tests {
         assert_eq!(arc.deref(), &(0, 2, 56));
         drop(arc);
         assert_eq!(weak.strong_count(), 1);
-        unsafe {
-            assert!(!vec.swap_remove_by_ptr(arc_ptr))
-        }
+        unsafe { assert!(!vec.swap_remove_by_ptr(arc_ptr)) }
         assert_eq!(weak.strong_count(), 0);
     }
 }

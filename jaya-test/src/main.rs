@@ -1,35 +1,40 @@
 //! An example usage of `jaya-ecs`
-//! 
+//!
 //! Particles are simulated with Newtonian Gravity, and each particle has a random lifespan.
 //! When a particle's lifespan expires, it has a 50% chance of exploding, which can reduce the lifespan of nearby particles,
 //! or split into two equal mass particles.
-//! 
+//!
 //! A preview of the render is displayed in a window, while a video is compiled concurrently using FFMPEG. Thus, FFMPEG must be
 //! installed separately and accessible from command line.
 #![feature(exit_status_error)]
 
 use std::{
-    io::{stderr, Write, BufWriter},
-    process::{Command, Stdio, exit},
-    sync::mpsc::{sync_channel},
-    time::Instant, f64::consts::PI,
+    f64::consts::PI,
+    io::{stderr, BufWriter, Write},
+    process::{exit, Command, Stdio},
+    sync::mpsc::sync_channel,
+    time::Instant,
 };
 
-use flo_draw::{create_drawing_window, canvas::{GraphicsPrimitives, Color, GraphicsContext}, with_2d_graphics, initialize_offscreen_rendering, render_canvas_offscreen};
+use flo_draw::{
+    canvas::{Color, GraphicsContext, GraphicsPrimitives},
+    create_drawing_window, initialize_offscreen_rendering, render_canvas_offscreen,
+    with_2d_graphics,
+};
 use float_ord::FloatOrd;
 use futures::{executor::block_on, stream};
 use jaya_ecs::{
-    component::{Component},
-    extract::{
-        Query,
-    },
+    component::Component,
+    extract::Query,
     rayon::{
-        join, slice::ParallelSliceMut, prelude::{IntoParallelIterator, ParallelIterator},
+        join,
+        prelude::{IntoParallelIterator, ParallelIterator},
+        slice::ParallelSliceMut,
     },
     system::System,
-    universe::{Universe},
+    universe::Universe,
 };
-use nalgebra::{Vector2, Rotation2};
+use nalgebra::{Rotation2, Vector2};
 
 // Number of pixels in a single frame in the output video
 const FRAME_WIDTH: usize = 800;
@@ -62,7 +67,6 @@ const MIN_DISTANCE: f64 = 5.0;
 const CENTER_RECT_HALF_WIDTH: f32 = 1.0;
 const CENTER_RECT_HALF_HEIGHT: f32 = 4.0;
 const CENTER_CROSS_BRIGHTNESS: f32 = 0.3;
-
 
 // The speed in pixels that the camera's bounds can move to fit the universe
 const CAMERA_MOVE_SPEED: f64 = 5.0;
@@ -109,7 +113,6 @@ impl ParticleComponent {
 
 impl Component for ParticleComponent {}
 
-
 fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
     const GRAVITATIONAL_CONST: f64 = 0.0000001;
 
@@ -119,7 +122,7 @@ fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
     let force = GRAVITATIONAL_CONST * p1.mass * p2.mass / distance;
     travel = travel.normalize();
 
-    let p1_delta = - force * travel * DELTA;
+    let p1_delta = -force * travel * DELTA;
     let p2_delta = force * travel * DELTA;
 
     p1.queue_mut(move |x| {
@@ -153,7 +156,7 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
             origin: p1.origin + velocity * DELTA,
             velocity,
             mass: p1.mass,
-            lifespan: MIN_LIFESPAN + fastrand::f64() * (MAX_LIFESPAN - MIN_LIFESPAN)
+            lifespan: MIN_LIFESPAN + fastrand::f64() * (MAX_LIFESPAN - MIN_LIFESPAN),
         },));
         return;
     }
@@ -178,12 +181,10 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
     explode.run_once(universe);
 }
 
-
 enum FrameInfo {
     Particle(ParticleComponent),
-    EndFrame
+    EndFrame,
 }
-
 
 fn main() -> Result<(), std::io::Error> {
     let mut ffmpeg = Command::new("ffmpeg")
@@ -200,15 +201,13 @@ fn main() -> Result<(), std::io::Error> {
     let mut ffmpeg_stderr = ffmpeg.stderr.take().unwrap();
 
     let (frame_sender, frame_receiver) = sync_channel::<FrameInfo>(FRAME_COUNT * PARTICLE_COUNT);
-        // println!("{}", FRAME_COUNT * PARTICLE_COUNT);
+    // println!("{}", FRAME_COUNT * PARTICLE_COUNT);
 
     let mut particles = Universe::<()>::default();
-    
-    (0..PARTICLE_COUNT)
-        .into_par_iter()
-        .for_each(|_| {
-            particles.add_entity((ParticleComponent::rand(),));
-        });
+
+    (0..PARTICLE_COUNT).into_par_iter().for_each(|_| {
+        particles.add_entity((ParticleComponent::rand(),));
+    });
 
     particles.process_queues();
 
@@ -220,32 +219,30 @@ fn main() -> Result<(), std::io::Error> {
         join(
             move || {
                 let start = Instant::now();
-        
+
                 for _i in 0..FRAME_COUNT {
-                    (
-                        attraction,
-                        ageing,
-                        |p1: Query<ParticleComponent>| {
-                            frame_sender.send(FrameInfo::Particle(*p1)).unwrap();
-                        }
-                    ).run_once(&particles);
+                    (attraction, ageing, |p1: Query<ParticleComponent>| {
+                        frame_sender.send(FrameInfo::Particle(*p1)).unwrap();
+                    })
+                        .run_once(&particles);
                     frame_sender.send(FrameInfo::EndFrame).unwrap();
-                    
+
                     particles.process_queues();
                 }
-    
+
                 println!("Simulation done in {}s", start.elapsed().as_secs_f32());
             },
             move || {
                 let start = Instant::now();
-        
+
                 let mut canvas = initialize_offscreen_rendering().unwrap();
 
                 macro_rules! send_to_ffmpeg {
                     ($frame: expr) => {
                         if let Err(e) = ffmpeg_stdin.write_all(&$frame) {
                             eprintln!("{e}");
-                            std::io::copy(&mut ffmpeg_stderr, &mut stderr().lock()).expect("stderr copy to work");
+                            std::io::copy(&mut ffmpeg_stderr, &mut stderr().lock())
+                                .expect("stderr copy to work");
                             exit(1);
                         }
                     };
@@ -285,71 +282,117 @@ fn main() -> Result<(), std::io::Error> {
 
                     center = center.scale(1.0 / frame_data.len() as f64);
 
-                    frame_data.par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.x - center.x));
-                    let mut lower_x = frame_data.get(frame_data.len() / FRAME_QUANTILE).unwrap().0.x;
-                    let mut upper_x = frame_data.get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().0.x;
-    
-                    frame_data.par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.y - center.y));
-                    let mut lower_y = frame_data.get(frame_data.len() / FRAME_QUANTILE).unwrap().0.y;
-                    let mut upper_y = frame_data.get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().0.y;
+                    frame_data
+                        .par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.x - center.x));
+                    let mut lower_x = frame_data
+                        .get(frame_data.len() / FRAME_QUANTILE)
+                        .unwrap()
+                        .0
+                        .x;
+                    let mut upper_x = frame_data
+                        .get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE)
+                        .unwrap()
+                        .0
+                        .x;
+
+                    frame_data
+                        .par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.y - center.y));
+                    let mut lower_y = frame_data
+                        .get(frame_data.len() / FRAME_QUANTILE)
+                        .unwrap()
+                        .0
+                        .y;
+                    let mut upper_y = frame_data
+                        .get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE)
+                        .unwrap()
+                        .0
+                        .y;
 
                     if i > 0 {
                         const CAMERA_MOVE_STEP: f64 = CAMERA_MOVE_SPEED * DELTA;
                         if (lower_x - last_lower_x).abs() > CAMERA_MOVE_STEP {
-                            lower_x = last_lower_x + (lower_x - last_lower_x) / (lower_x - last_lower_x).abs() * CAMERA_MOVE_STEP;
+                            lower_x = last_lower_x
+                                + (lower_x - last_lower_x) / (lower_x - last_lower_x).abs()
+                                    * CAMERA_MOVE_STEP;
                         }
                         if (lower_y - last_lower_y).abs() > CAMERA_MOVE_STEP {
-                            lower_y = last_lower_y + (lower_y - last_lower_y) / (lower_y - last_lower_y).abs() * CAMERA_MOVE_STEP;
+                            lower_y = last_lower_y
+                                + (lower_y - last_lower_y) / (lower_y - last_lower_y).abs()
+                                    * CAMERA_MOVE_STEP;
                         }
                         if (upper_x - last_upper_x).abs() > CAMERA_MOVE_STEP {
-                            upper_x = last_upper_x + (upper_x - last_upper_x) / (upper_x - last_upper_x).abs() * CAMERA_MOVE_STEP;
+                            upper_x = last_upper_x
+                                + (upper_x - last_upper_x) / (upper_x - last_upper_x).abs()
+                                    * CAMERA_MOVE_STEP;
                         }
                         if (upper_y - last_upper_y).abs() > CAMERA_MOVE_STEP {
-                            upper_y = last_upper_y + (upper_y - last_upper_y) / (upper_y - last_upper_y).abs() * CAMERA_MOVE_STEP;
+                            upper_y = last_upper_y
+                                + (upper_y - last_upper_y) / (upper_y - last_upper_y).abs()
+                                    * CAMERA_MOVE_STEP;
                         }
                     }
                     last_lower_x = lower_x;
                     last_lower_y = lower_y;
                     last_upper_x = upper_x;
                     last_upper_y = upper_y;
-    
+
                     let true_frame_height = upper_y - lower_y;
                     let true_frame_width = upper_x - lower_x;
-    
+
                     for (origin, speed, mass) in frame_data {
                         let x = (origin.x - lower_x) / true_frame_width * FRAME_WIDTH as f64;
                         let y = (origin.y - lower_y) / true_frame_height * FRAME_WIDTH as f64;
-    
+
                         let r = 0.4 + 0.6 * speed / max_vel;
                         let g = r;
                         let b = (r + g) / 2.0;
                         drawing.fill_color(Color::Rgba(r as f32, g as f32, b as f32, 1.0));
 
                         drawing.new_path();
-                        drawing.circle(x as f32, y as f32, (mass.powf(1.0 / 3.0) * STAR_RADIUS_FACTOR) as f32);
+                        drawing.circle(
+                            x as f32,
+                            y as f32,
+                            (mass.powf(1.0 / 3.0) * STAR_RADIUS_FACTOR) as f32,
+                        );
                         drawing.fill();
                     }
 
-                    let x = - lower_x / true_frame_width * FRAME_WIDTH as f64;
-                    let y = - lower_y / true_frame_height * FRAME_WIDTH as f64;
+                    let x = -lower_x / true_frame_width * FRAME_WIDTH as f64;
+                    let y = -lower_y / true_frame_height * FRAME_WIDTH as f64;
 
                     drawing.fill_color(Color::Rgba(CENTER_CROSS_BRIGHTNESS, 0.0, 0.0, 1.0));
                     drawing.new_path();
-                    drawing.rect(x as f32 - CENTER_RECT_HALF_WIDTH, y as f32 - CENTER_RECT_HALF_HEIGHT, x as f32 + CENTER_RECT_HALF_WIDTH, y as f32 + CENTER_RECT_HALF_HEIGHT);
+                    drawing.rect(
+                        x as f32 - CENTER_RECT_HALF_WIDTH,
+                        y as f32 - CENTER_RECT_HALF_HEIGHT,
+                        x as f32 + CENTER_RECT_HALF_WIDTH,
+                        y as f32 + CENTER_RECT_HALF_HEIGHT,
+                    );
                     drawing.fill();
 
                     drawing.new_path();
-                    drawing.rect(x as f32 - CENTER_RECT_HALF_HEIGHT, y as f32 - CENTER_RECT_HALF_WIDTH, x as f32 + CENTER_RECT_HALF_HEIGHT, y as f32 + CENTER_RECT_HALF_WIDTH);
+                    drawing.rect(
+                        x as f32 - CENTER_RECT_HALF_HEIGHT,
+                        y as f32 - CENTER_RECT_HALF_WIDTH,
+                        x as f32 + CENTER_RECT_HALF_HEIGHT,
+                        y as f32 + CENTER_RECT_HALF_WIDTH,
+                    );
                     drawing.fill();
 
                     ui.draw(|gc| gc.extend(drawing.clone()));
-                    let frame = block_on(render_canvas_offscreen(&mut canvas, FRAME_WIDTH, FRAME_WIDTH, 1.0, stream::iter(drawing)));
+                    let frame = block_on(render_canvas_offscreen(
+                        &mut canvas,
+                        FRAME_WIDTH,
+                        FRAME_WIDTH,
+                        1.0,
+                        stream::iter(drawing),
+                    ));
                     send_to_ffmpeg!(frame);
-    
+
                     if i == 0 {
                         continue;
                     }
-    
+
                     if i % (FRAME_COUNT as f32 * 0.1) as usize == 0 {
                         let elapsed = start.elapsed().as_secs_f32();
                         println!(
@@ -363,13 +406,16 @@ fn main() -> Result<(), std::io::Error> {
 
                 if let Err(e) = ffmpeg_stdin.flush() {
                     eprintln!("{e}");
-                    std::io::copy(&mut ffmpeg_stderr, &mut stderr().lock()).expect("stderr copy to work");
+                    std::io::copy(&mut ffmpeg_stderr, &mut stderr().lock())
+                        .expect("stderr copy to work");
                     exit(1);
                 }
 
                 drop(ffmpeg_stdin);
-                let output = ffmpeg.wait_with_output().expect("FFMPEG process status failed to collect");
-        
+                let output = ffmpeg
+                    .wait_with_output()
+                    .expect("FFMPEG process status failed to collect");
+
                 if let Err(e) = output.status.exit_ok() {
                     println!("ffmpeg status: {e}");
                     stderr().write_all(&output.stderr).unwrap();

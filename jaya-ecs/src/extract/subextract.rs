@@ -67,7 +67,7 @@ unsafe impl Send for ComponentModifier {}
 unsafe impl Sync for ComponentModifier {}
 
 /// A simplified separate-chaining hash table for separating modifiers into chains that can be executed in parallel
-/// 
+///
 /// A `ComponentModifier` is hashed by its pointer to a `Component` and thus will always be placed in the same chain.
 /// More often than not, modifiers to different components will be stored in the same chain, but that is still safe.
 /// There will always be as many chains as threads (roughly), so there is no benefit to storing modifiers in more separate
@@ -134,7 +134,7 @@ enum MultiEnqueue {
 }
 
 /// A data structure for sorting modifiers that require multiple mutable references
-/// 
+///
 /// This uses an Actor to sort concurrently, so requires far more resources than `ComponentModifierStager`.
 /// Each `Component` pointer in a multi modifier is hashed, and its presence is checked in a hash table.
 /// If all pointers are not found in the hash table, then the modifier can be executed in parallel with the

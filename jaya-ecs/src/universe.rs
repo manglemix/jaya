@@ -1,15 +1,25 @@
-use std::{any::TypeId, hint::unreachable_unchecked, sync::atomic::{AtomicPtr, Ordering, AtomicU64}, marker::PhantomPinned, pin::Pin, ops::Deref};
+use std::{
+    any::TypeId,
+    hint::unreachable_unchecked,
+    marker::PhantomPinned,
+    ops::Deref,
+    pin::Pin,
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+};
 
-use crossbeam::{queue::{SegQueue, ArrayQueue}};
+use crossbeam::queue::{ArrayQueue, SegQueue};
 use dashmap::DashMap;
-use fxhash::{FxHashMap, FxBuildHasher};
+use fxhash::{FxBuildHasher, FxHashMap};
 use parking_lot::RwLock;
-use rayon::{prelude::{ParallelIterator, FromParallelIterator}, iter::empty};
+use rayon::{
+    iter::empty,
+    prelude::{FromParallelIterator, ParallelIterator},
+};
 
 use crate::{
     collections::AnyVec,
-    component::{Component},
-    entity::{EntityId},
+    component::Component,
+    entity::EntityId,
     extract::{
         ComponentModifier, ComponentModifierStager, MultiComponentModifier,
         MultiComponentModifierStager,
@@ -22,7 +32,7 @@ impl<T> Deref for Unmovable<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.0
+        &self.0 .0
     }
 }
 
@@ -36,7 +46,7 @@ impl<T> From<T> for Unmovable<T> {
 struct PackedComponent<C> {
     ptr: Box<AtomicPtr<u8>>,
     id: EntityId,
-    component: C
+    component: C,
 }
 
 struct RemoveComponentData {
@@ -48,23 +58,25 @@ struct RemoveComponentData {
 struct EntityMap {
     map: DashMap<EntityId, Vec<RemoveComponentData>, FxBuildHasher>,
     empty_vecs: ArrayQueue<Vec<RemoveComponentData>>,
-    id_counter: AtomicU64
+    id_counter: AtomicU64,
 }
-
 
 impl Default for EntityMap {
     fn default() -> Self {
         Self {
             map: Default::default(),
-            empty_vecs: ArrayQueue::new(256), 
-            id_counter: Default::default()
+            empty_vecs: ArrayQueue::new(256),
+            id_counter: Default::default(),
         }
     }
 }
 
 impl EntityMap {
     fn add_entity<const N: usize>(&self, component_ptrs: [RemoveComponentData; N]) -> EntityId {
-        let mut vec = self.empty_vecs.pop().unwrap_or_else(|| Vec::with_capacity(N));
+        let mut vec = self
+            .empty_vecs
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(N));
         vec.extend(component_ptrs);
         // In the situation that the id counter overflows,
         // all that would happen is the programmer will lose the ability to
@@ -100,21 +112,21 @@ impl EntityMap {
     }
 }
 
-unsafe impl Send for RemoveComponentData { }
-unsafe impl Sync for RemoveComponentData { }
+unsafe impl Send for RemoveComponentData {}
+unsafe impl Sync for RemoveComponentData {}
 
 /// A Universe is a container for components, and an optional extension object
-/// 
+///
 /// A Universe allows Systems to be ran, and modifications to components to be done in parallel
 #[derive(Default)]
-pub struct Universe<T=()> {
+pub struct Universe<T = ()> {
     components: FxHashMap<TypeId, Unmovable<AnyVec>>,
     mod_queue: ComponentModifierStager,
     multi_mod_queue: MultiComponentModifierStager,
     new_components_map: RwLock<FxHashMap<TypeId, Unmovable<AnyVec>>>,
     remove_queue: SegQueue<EntityId>,
     entity_map: EntityMap,
-    extension: T
+    extension: T,
 }
 
 impl<S> Universe<S> {
@@ -125,7 +137,7 @@ impl<S> Universe<S> {
     }
 
     /// Adds an entity with the given components
-    /// 
+    ///
     /// The given components should be in a tuple (even if it is just one component).
     /// An EntityId is assigned to it and returned
     #[inline(always)]
@@ -139,18 +151,16 @@ impl<S> Universe<S> {
         T: Component + 'static,
         F: Fn(EntityId, &'a T) + Sync,
     {
-        self.components
-            .get(&TypeId::of::<T>())
-            .map(|bytes| unsafe {
-                bytes
-                    .par_iter::<PackedComponent<T>>()
-                    .unwrap_unchecked()
-                    .for_each(|x| (f)(x.id, &x.component));
-            });
+        self.components.get(&TypeId::of::<T>()).map(|bytes| unsafe {
+            bytes
+                .par_iter::<PackedComponent<T>>()
+                .unwrap_unchecked()
+                .for_each(|x| (f)(x.id, &x.component));
+        });
     }
 
     /// Runs the given function on all combinations of components of a given type `T`.
-    /// 
+    ///
     /// Combinations are like permutations, except that the order of the components does not matter
     pub fn iter_component_combinations<'a, T, F, const N: usize>(&'a self, f: F)
     where
@@ -172,7 +182,7 @@ impl<S> Universe<S> {
         V: Send,
         T: Component + 'static,
         F: Fn(EntityId, &'a T) -> V + Sync,
-        C: FromParallelIterator<V>
+        C: FromParallelIterator<V>,
     {
         self.components
             .get(&TypeId::of::<T>())
@@ -187,21 +197,21 @@ impl<S> Universe<S> {
     }
 
     /// Queues an entity for removal
-    /// 
+    ///
     /// Entities will *never* be removed instantly
     pub fn queue_remove_entity(&self, id: EntityId) {
         self.remove_queue.push(id);
     }
 
     /// Queues a component modification
-    /// 
+    ///
     /// Modifications will *never* be applied instantly
     pub(crate) fn queue_component_modifier(&self, modifier: ComponentModifier) {
         self.mod_queue.queue_modifier(modifier);
     }
 
     /// Queues a multi component modification
-    /// 
+    ///
     /// Modifications will *never* be applied instantly
     pub(crate) fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier) {
         self.multi_mod_queue.queue_modifier(modifier);
@@ -213,7 +223,8 @@ impl<S> Universe<S> {
             self.multi_mod_queue.execute();
             self.mod_queue.execute();
         }
-        self.components.extend(self.new_components_map.get_mut().drain());
+        self.components
+            .extend(self.new_components_map.get_mut().drain());
         while let Some(id) = self.remove_queue.pop() {
             unsafe {
                 self.entity_map.remove_entity(id);
@@ -248,7 +259,7 @@ impl<C1: Component + 'static> ComponentsContainer for (C1,) {
                 PackedComponent {
                     ptr: c1_ptr,
                     id: $id,
-                    component: c1
+                    component: c1,
                 }
             };
         }
@@ -269,7 +280,7 @@ impl<C1: Component + 'static> ComponentsContainer for (C1,) {
                         let insert_ptr = vec.push(packed!(id)).unwrap_unchecked();
                         (*c1_ptr_ptr).store(insert_ptr, Ordering::Relaxed);
                     }
-                    return id
+                    return id;
                 }
             }
             let vec = Unmovable::from(AnyVec::new::<PackedComponent<C1>>());
@@ -284,9 +295,8 @@ impl<C1: Component + 'static> ComponentsContainer for (C1,) {
     }
 }
 
-
 /// Trait for structs that contains a sub state
-/// 
+///
 /// You can think of this as another type of `AsRef`
 pub trait AsSubState<S> {
     /// Extracts a sub state from `self`
