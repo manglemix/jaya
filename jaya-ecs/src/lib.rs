@@ -1,10 +1,6 @@
-// #![feature(associated_type_defaults)]
-// #![feature(never_type)]
-// #![feature(iter_collect_into)]
-// #![feature(unboxed_closures)]
-// #![feature(fn_traits)]
-// #![feature(once_cell)]
-// #![feature(generic_const_exprs)]
+//! A simple implementation of an Entity Component System
+//! 
+//! Emphasis is placed on ergonomics and massive parallelism.
 #![feature(maybe_uninit_uninit_array)]
 #![feature(sync_unsafe_cell)]
 

@@ -44,6 +44,7 @@ struct RemoveComponentData {
     component_vec_ptr: *const AnyVec,
 }
 
+/// A concurrent map of entities and pointers to their `Component`s
 struct EntityMap {
     map: DashMap<EntityId, Vec<RemoveComponentData>, FxBuildHasher>,
     empty_vecs: ArrayQueue<Vec<RemoveComponentData>>,
@@ -99,9 +100,12 @@ impl EntityMap {
     }
 }
 
-unsafe impl Send for EntityMap { }
-unsafe impl Sync for EntityMap { }
+unsafe impl Send for RemoveComponentData { }
+unsafe impl Sync for RemoveComponentData { }
 
+/// A Universe is a container for components, and an optional extension object
+/// 
+/// A Universe allows Systems to be ran, and modifications to components to be done in parallel
 #[derive(Default)]
 pub struct Universe<T=()> {
     components: FxHashMap<TypeId, Unmovable<AnyVec>>,
@@ -114,16 +118,22 @@ pub struct Universe<T=()> {
 }
 
 impl<S> Universe<S> {
+    /// Borrows the extension
     #[inline(always)]
     pub fn get_extension(&self) -> &S {
         &self.extension
     }
 
+    /// Adds an entity with the given components
+    /// 
+    /// The given components should be in a tuple (even if it is just one component).
+    /// An EntityId is assigned to it and returned
     #[inline(always)]
     pub fn add_entity<C: ComponentsContainer>(&self, components: C) -> EntityId {
         components.add_to_universe(self)
     }
 
+    /// Runs the given function on all components of a given type `T`
     pub fn iter_components<'a, T, F>(&'a self, f: F)
     where
         T: Component + 'static,
@@ -139,6 +149,9 @@ impl<S> Universe<S> {
             });
     }
 
+    /// Runs the given function on all combinations of components of a given type `T`.
+    /// 
+    /// Combinations are like permutations, except that the order of the components does not matter
     pub fn iter_component_combinations<'a, T, F, const N: usize>(&'a self, f: F)
     where
         T: Component + 'static,
@@ -153,6 +166,7 @@ impl<S> Universe<S> {
         });
     }
 
+    /// Runs the given function on all components of a given type `T`, and collects the result
     pub fn iter_components_collect<'a, T, F, V, C>(&'a self, f: F) -> C
     where
         V: Send,
@@ -172,18 +186,28 @@ impl<S> Universe<S> {
             .unwrap_or_else(|| empty().collect())
     }
 
+    /// Queues an entity for removal
+    /// 
+    /// Entities will *never* be removed instantly
     pub fn queue_remove_entity(&self, id: EntityId) {
         self.remove_queue.push(id);
     }
 
-    pub fn queue_component_modifier(&self, modifier: ComponentModifier) {
+    /// Queues a component modification
+    /// 
+    /// Modifications will *never* be applied instantly
+    pub(crate) fn queue_component_modifier(&self, modifier: ComponentModifier) {
         self.mod_queue.queue_modifier(modifier);
     }
 
-    pub fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier) {
+    /// Queues a multi component modification
+    /// 
+    /// Modifications will *never* be applied instantly
+    pub(crate) fn queue_multi_component_modifier(&self, modifier: MultiComponentModifier) {
         self.multi_mod_queue.queue_modifier(modifier);
     }
 
+    /// Clears out remove and modifier queues and applies the changes
     pub fn process_queues(&mut self) {
         unsafe {
             self.multi_mod_queue.execute();
@@ -198,6 +222,7 @@ impl<S> Universe<S> {
     }
 }
 
+/// You should not need to implement this yourself
 pub trait ComponentsContainer {
     fn add_to_universe<S>(self, universe: &Universe<S>) -> EntityId;
 }
@@ -260,6 +285,10 @@ impl<C1: Component + 'static> ComponentsContainer for (C1,) {
 }
 
 
+/// Trait for structs that contains a sub state
+/// 
+/// You can think of this as another type of `AsRef`
 pub trait AsSubState<S> {
+    /// Extracts a sub state from `self`
     fn as_sub_state(&self) -> &S;
 }

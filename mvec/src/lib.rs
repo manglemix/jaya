@@ -1,3 +1,4 @@
+//! Unused
 #![feature(sync_unsafe_cell)]
 #![feature(iter_collect_into)]
 #![feature(slice_ptr_get)]

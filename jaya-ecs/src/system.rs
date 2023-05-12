@@ -2,6 +2,11 @@ use rayon::join;
 
 use crate::{extract::FromUniverse, universe::Universe};
 
+/// A System is some operation on one or more components and states
+/// 
+/// All thread safe functions which return `()`, and whose parameters
+/// implement `FromUniverse`, implements `System`. Due to implementation limitations,
+/// only functions with up to three parameters are Systems.
 pub trait System<'a, T, S> {
     fn run_once(&self, universe: &'a Universe<S>);
 }

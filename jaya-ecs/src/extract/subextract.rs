@@ -26,7 +26,7 @@ const DEFAULT_MODIFIER_BUFFER_SIZE: usize = 1_000;
 const MULTI_MODIFIER_LIMIT: usize = 4;
 type PtrArray = [Option<NonNull<()>>; MULTI_MODIFIER_LIMIT];
 
-pub struct ComponentModifier {
+pub(crate) struct ComponentModifier {
     pub(super) ptr: NonNull<()>,
     pub(super) f: Box<dyn FnOnce(NonNull<()>)>,
 }
@@ -58,10 +58,6 @@ impl Eq for ComponentModifier {}
 // }
 
 impl ComponentModifier {
-    pub fn get_ptr(&self) -> NonNull<()> {
-        self.ptr
-    }
-
     pub unsafe fn execute(self) {
         (self.f)(self.ptr);
     }
@@ -70,10 +66,13 @@ impl ComponentModifier {
 unsafe impl Send for ComponentModifier {}
 unsafe impl Sync for ComponentModifier {}
 
+/// A simplified separate-chaining hash table for separating modifiers into chains that can be executed in parallel
+/// 
+/// A `ComponentModifier` is hashed by its pointer to a `Component` and thus will always be placed in the same chain.
+/// More often than not, modifiers to different components will be stored in the same chain, but that is still safe.
+/// There will always be as many chains as threads (roughly), so there is no benefit to storing modifiers in more separate
+/// chains in terms of performance
 pub struct ComponentModifierStager {
-    // modification_complete_count: Arc<AtomicUsize>,
-    // mod_senders: Vec<SyncSender<MonoEnqueue>>,
-    // buffer_filled: AtomicBool
     modifiers: Box<[SegQueue<ComponentModifier>]>,
 }
 
@@ -99,7 +98,7 @@ impl ComponentModifierStager {
         }
     }
 
-    pub fn queue_modifier(&self, modifier: ComponentModifier) {
+    pub(crate) fn queue_modifier(&self, modifier: ComponentModifier) {
         let mut hash = SpookyHasher::default();
         hash.write_usize(modifier.ptr.as_ptr() as usize);
         let hash = hash.finish() as usize;
@@ -110,6 +109,8 @@ impl ComponentModifierStager {
             .push(modifier);
     }
 
+    /// # Safety
+    /// There must be no references to any `Component` which has queued modification
     pub unsafe fn execute(&mut self) {
         // println!("{:?}", self.modifiers.iter().map(|x| x.len()).collect::<Vec<_>>());
         self.modifiers.par_iter_mut().for_each(|queue| {
@@ -132,6 +133,13 @@ enum MultiEnqueue {
     Resize(Receiver<Self>),
 }
 
+/// A data structure for sorting modifiers that require multiple mutable references
+/// 
+/// This uses an Actor to sort concurrently, so requires far more resources than `ComponentModifierStager`.
+/// Each `Component` pointer in a multi modifier is hashed, and its presence is checked in a hash table.
+/// If all pointers are not found in the hash table, then the modifier can be executed in parallel with the
+/// other modifiers in that table. Otherwise, another table is used (or made if there isn't one) and the process
+/// is repeated. Thus, all modifiers in a table can be executed in parallel, but tables must be ran sequentially
 pub struct MultiComponentModifierStager {
     modification_complete: Arc<AtomicBool>,
     mod_sender: SyncSender<MultiEnqueue>,
@@ -212,7 +220,7 @@ impl MultiComponentModifierStager {
         }
     }
 
-    pub fn queue_modifier(&self, modifier: MultiComponentModifier) {
+    pub(crate) fn queue_modifier(&self, modifier: MultiComponentModifier) {
         unsafe {
             let Err(err) = self.mod_sender.try_send(MultiEnqueue::Modifier(modifier)) else { return };
             self.buffer_filled.store(true, Ordering::Relaxed);
@@ -255,7 +263,7 @@ impl Default for MultiComponentModifierStager {
     }
 }
 
-pub struct MultiComponentModifier {
+pub(crate) struct MultiComponentModifier {
     ptrs: PtrArray,
     f: Box<dyn FnOnce(PtrArray)>,
 }
@@ -264,15 +272,13 @@ unsafe impl Send for MultiComponentModifier {}
 unsafe impl Sync for MultiComponentModifier {}
 
 impl MultiComponentModifier {
-    pub fn get_ptrs(&self) -> PtrArray {
-        self.ptrs
-    }
-
     pub unsafe fn execute(self) {
         (self.f)(self.ptrs)
     }
 }
 
+/// A MultiQuery is simply the combination of multiple queries,
+/// allowing for modifiers to have access to multiple mutable references to `Component`s at a time
 pub trait MultiQuery {
     type Arguments;
 

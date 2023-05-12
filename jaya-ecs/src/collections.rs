@@ -70,6 +70,9 @@ impl AnyVec {
     /// 4. There must not be any thread that is concurrently adding elements
     /// 5. `ptr` must not currently be used. This includes calls to this method. (ie. Do not use the same `ptr` to this method concurrently)
     /// 6. `ptr` must point to a valid object that is of the same type that `self` is initialized for
+    /// 
+    /// # Programmer's Note
+    /// This is probably the most unsafe function I've written
     pub unsafe fn swap_remove_by_ptr(&self, ptr: *mut u8) -> bool {
         (self.dropper)(ptr);
         let current_len = self.init_len.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -97,6 +100,11 @@ impl AnyVec {
     //     }
     // }
 
+    /// Pushes the given value onto the `self`
+    /// 
+    /// If the type of the given value is the type that this vector was initialized for, then `Ok`
+    /// is returned containing a bytes ptr to where the value is stored. Otherwise, `Err` is returned
+    /// containing the given value.
     #[must_use]
     pub fn push<T: Send + Sync + 'static>(&self, value: T) -> Result<*mut u8, PushError<T>> {
         if TypeId::of::<T>() != self.type_id {

@@ -14,11 +14,3 @@ impl Debug for EntityId {
         )
     }
 }
-
-pub trait RemoveEntity<P> {
-    fn queue_remove_entity(&self, id: EntityId);
-}
-
-pub trait AddEntity<T> {
-    fn queue_add_entity(&self, id: EntityId, entity: T);
-}

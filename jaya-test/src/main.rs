@@ -1,3 +1,11 @@
+//! An example usage of `jaya-ecs`
+//! 
+//! Particles are simulated with Newtonian Gravity, and each particle has a random lifespan.
+//! When a particle's lifespan expires, it has a 50% chance of exploding, which can reduce the lifespan of nearby particles,
+//! or split into two equal mass particles.
+//! 
+//! A preview of the render is displayed in a window, while a video is compiled concurrently using FFMPEG. Thus, FFMPEG must be
+//! installed separately and accessible from command line.
 #![feature(exit_status_error)]
 
 use std::{
@@ -10,7 +18,6 @@ use std::{
 use flo_draw::{create_drawing_window, canvas::{GraphicsPrimitives, Color, GraphicsContext}, with_2d_graphics, initialize_offscreen_rendering, render_canvas_offscreen};
 use float_ord::FloatOrd;
 use futures::{executor::block_on, stream};
-// use image::{codecs::gif::GifEncoder, Delay, Frame, ImageBuffer, Rgba};
 use jaya_ecs::{
     component::{Component},
     extract::{
@@ -24,41 +31,55 @@ use jaya_ecs::{
 };
 use nalgebra::{Vector2, Rotation2};
 
+// Number of pixels in a single frame in the output video
+const FRAME_WIDTH: usize = 800;
+// How long the final video should be
+const VIDEO_DURATION: f32 = 25.0;
+// The framerate of the final video
 const FPS: usize = 120;
-const DELTA: f64 = 1.0 / FPS as f64;
 
-const FRAME_WIDTH: usize = 600;
+// The maximum speed in the x and y direction when randomly generating velocities
 const SPEED_BOUNDS: f64 = 10.0;
-
+// Mass bounds for particles
 const MIN_MASS: f64 = 100.0;
 const MAX_MASS: f64 = 10000.0;
+// How long a particle can live for before it explodes or splits
+const MIN_LIFESPAN: f64 = 0.75;
+const MAX_LIFESPAN: f64 = 100.0;
+// Affects how large a particle can be based on its mass
+const STAR_RADIUS_FACTOR: f64 = 0.1;
 
+// The number of particles at the beginning of the simulation
+const PARTICLE_COUNT: usize = 1500;
+// The number of pixels per particle at the beginning of the simulation
+// Essentially, bigger numbers mean more spread out
+const PIXELS_PER_PARTICLE: usize = 600;
+
+// The minimum distance between particles to avoid divide-by-zero errors
 const MIN_DISTANCE: f64 = 5.0;
 
-const MIN_AGE: f64 = 0.75;
-const MAX_AGE: f64 = 100.0;
-
-const FRAME_COUNT: usize = (25.0 * FPS as f32) as usize;
-const PARTICLE_COUNT: usize = 1500;
-
-const FRAME_QUANTILE: usize = 6;
-
-const SQUARE_PIXELS_PER_PARTICLE: usize = 600;
-const SPAWN_RADIUS_SQUARED: f64 = (SQUARE_PIXELS_PER_PARTICLE * PARTICLE_COUNT) as f64 / PI;
-
+// To draw the red cross at the origin
 const CENTER_RECT_HALF_WIDTH: f32 = 1.0;
 const CENTER_RECT_HALF_HEIGHT: f32 = 4.0;
 const CENTER_CROSS_BRIGHTNESS: f32 = 0.3;
-const STAR_RADIUS_FACTOR: f64 = 0.1;
 
+
+// The speed in pixels that the camera's bounds can move to fit the universe
 const CAMERA_MOVE_SPEED: f64 = 5.0;
+// Higher numbers make the camera view more of the universe at once
+const FRAME_QUANTILE: usize = 6;
+
+// These constants are calculated automatically
+const SPAWN_RADIUS_SQUARED: f64 = (PIXELS_PER_PARTICLE * PARTICLE_COUNT) as f64 / PI;
+const FRAME_COUNT: usize = (VIDEO_DURATION * FPS as f32) as usize;
+const DELTA: f64 = 1.0 / FPS as f64;
 
 #[derive(Debug, Clone, Copy)]
 struct ParticleComponent {
     origin: Vector2<f64>,
     velocity: Vector2<f64>,
     mass: f64,
-    age: f64,
+    lifespan: f64,
 }
 
 impl ParticleComponent {
@@ -81,7 +102,7 @@ impl ParticleComponent {
                 (fastrand::f64() - 0.5) * 2.0 * SPEED_BOUNDS,
             ),
             mass: MIN_MASS + fastrand::f64() * (MAX_MASS - MIN_MASS),
-            age: MIN_AGE + fastrand::f64() * (MAX_AGE - MIN_AGE),
+            lifespan: MIN_LIFESPAN + fastrand::f64() * (MAX_LIFESPAN - MIN_LIFESPAN),
         }
     }
 }
@@ -112,10 +133,10 @@ fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
 fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
     const FORCE_FACTOR: f64 = 5.0;
     const AGE_FACTOR: f64 = 2.0;
-    if p1.age > DELTA {
+    if p1.lifespan > DELTA {
         p1.queue_mut(|p1| {
             p1.origin += p1.velocity * DELTA;
-            p1.age -= DELTA;
+            p1.lifespan -= DELTA;
         });
         return;
     }
@@ -123,7 +144,7 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
     if fastrand::bool() {
         let extra_vel = Rotation2::new(PI / 2.0) * p1.velocity;
         p1.queue_mut(move |p1| {
-            p1.age = MIN_AGE + fastrand::f64() * (MAX_AGE - MIN_AGE);
+            p1.lifespan = MIN_LIFESPAN + fastrand::f64() * (MAX_LIFESPAN - MIN_LIFESPAN);
             p1.velocity += extra_vel;
             p1.origin += p1.velocity * DELTA;
         });
@@ -132,7 +153,7 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
             origin: p1.origin + velocity * DELTA,
             velocity,
             mass: p1.mass,
-            age: MIN_AGE + fastrand::f64() * (MAX_AGE - MIN_AGE)
+            lifespan: MIN_LIFESPAN + fastrand::f64() * (MAX_LIFESPAN - MIN_LIFESPAN)
         },));
         return;
     }
@@ -150,7 +171,7 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
 
         p2.queue_mut(move |p2| {
             p2.velocity += vel_delta;
-            p2.age -= age_factor;
+            p2.lifespan -= age_factor;
         });
     };
     universe.queue_remove_entity(p1.get_id());
@@ -322,7 +343,7 @@ fn main() -> Result<(), std::io::Error> {
                     drawing.fill();
 
                     ui.draw(|gc| gc.extend(drawing.clone()));
-                    let frame = block_on(render_canvas_offscreen(&mut canvas, 600, 600, 1.0, stream::iter(drawing)));
+                    let frame = block_on(render_canvas_offscreen(&mut canvas, FRAME_WIDTH, FRAME_WIDTH, 1.0, stream::iter(drawing)));
                     send_to_ffmpeg!(frame);
     
                     if i == 0 {
@@ -360,10 +381,6 @@ fn main() -> Result<(), std::io::Error> {
             },
         );
     });
-    // let output = Command::new("ffmpeg")
-    //     .args("-i simulation.gif -movflags faststart -pix_fmt yuv420p -vf scale=800:800:flags=neighbor,setpts=PTS/12,fps=120 -b:v 8M simulation.mp4 -y".split_ascii_whitespace())
-    //     .output()
-    //     .unwrap();
 
     Ok(())
 }
