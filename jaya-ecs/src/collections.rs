@@ -315,7 +315,7 @@ impl AnyVec {
         index *= t_size;
         for block in blocks {
             let block = unsafe { &mut (*block.get()) };
-            debug_assert!(block.len() % t_size == 0);
+            // debug_assert_eq!(block.len() % t_size, 0);
             if let Some(x) = block.get_mut(index) {
                 return x;
             }

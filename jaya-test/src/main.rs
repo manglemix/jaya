@@ -28,7 +28,7 @@ const FPS: usize = 120;
 const DELTA: f64 = 1.0 / FPS as f64;
 
 const FRAME_WIDTH: usize = 600;
-const SPEED_BOUNDS: f64 = 0.25;
+const SPEED_BOUNDS: f64 = 10.0;
 
 const MIN_MASS: f64 = 100.0;
 const MAX_MASS: f64 = 10000.0;
@@ -38,10 +38,10 @@ const MIN_DISTANCE: f64 = 5.0;
 const MIN_AGE: f64 = 0.75;
 const MAX_AGE: f64 = 100.0;
 
-const FRAME_COUNT: usize = (30.0 * FPS as f32) as usize;
+const FRAME_COUNT: usize = (25.0 * FPS as f32) as usize;
 const PARTICLE_COUNT: usize = 1500;
 
-const FRAME_QUANTILE: usize = 5;
+const FRAME_QUANTILE: usize = 6;
 
 const SQUARE_PIXELS_PER_PARTICLE: usize = 600;
 const SPAWN_RADIUS_SQUARED: f64 = (SQUARE_PIXELS_PER_PARTICLE * PARTICLE_COUNT) as f64 / PI;
@@ -50,6 +50,8 @@ const CENTER_RECT_HALF_WIDTH: f32 = 1.0;
 const CENTER_RECT_HALF_HEIGHT: f32 = 4.0;
 const CENTER_CROSS_BRIGHTNESS: f32 = 0.3;
 const STAR_RADIUS_FACTOR: f64 = 0.1;
+
+const CAMERA_MOVE_SPEED: f64 = 5.0;
 
 #[derive(Debug, Clone, Copy)]
 struct ParticleComponent {
@@ -61,11 +63,19 @@ struct ParticleComponent {
 
 impl ParticleComponent {
     fn rand() -> Self {
+        let bounds = SPAWN_RADIUS_SQUARED.sqrt();
+        let mut origin = Vector2::new(
+            (fastrand::f64() - 0.5) * 2.0 * bounds,
+            (fastrand::f64() - 0.5) * 2.0 * bounds,
+        );
+        while origin.magnitude() > bounds {
+            origin = Vector2::new(
+                (fastrand::f64() - 0.5) * 2.0 * bounds,
+                (fastrand::f64() - 0.5) * 2.0 * bounds,
+            );
+        }
         Self {
-            origin: Rotation2::new(fastrand::f64() * 2.0 * PI) * Vector2::new(
-                SPAWN_RADIUS_SQUARED.sqrt() * fastrand::f64(),
-                0.0,
-            ),
+            origin,
             velocity: Vector2::new(
                 (fastrand::f64() - 0.5) * 2.0 * SPEED_BOUNDS,
                 (fastrand::f64() - 0.5) * 2.0 * SPEED_BOUNDS,
@@ -80,7 +90,7 @@ impl Component for ParticleComponent {}
 
 
 fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
-    const GRAVITATIONAL_CONST: f64 = 0.000000001;
+    const GRAVITATIONAL_CONST: f64 = 0.0000001;
 
     let mut travel = p1.origin - p2.origin;
 
@@ -92,20 +102,21 @@ fn attraction([p1, p2]: [Query<ParticleComponent>; 2]) {
     let p2_delta = force * travel * DELTA;
 
     p1.queue_mut(move |x| {
-        x.origin += x.velocity * DELTA;
         x.velocity += p1_delta;
     });
     p2.queue_mut(move |x| {
-        x.origin += x.velocity * DELTA;
         x.velocity += p2_delta;
     });
 }
 
 fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
-    const FORCE_FACTOR: f64 = 3.0;
+    const FORCE_FACTOR: f64 = 5.0;
     const AGE_FACTOR: f64 = 2.0;
     if p1.age > DELTA {
-        p1.queue_mut(|p1| p1.age -= DELTA);
+        p1.queue_mut(|p1| {
+            p1.origin += p1.velocity * DELTA;
+            p1.age -= DELTA;
+        });
         return;
     }
 
@@ -114,10 +125,12 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
         p1.queue_mut(move |p1| {
             p1.age = MIN_AGE + fastrand::f64() * (MAX_AGE - MIN_AGE);
             p1.velocity += extra_vel;
+            p1.origin += p1.velocity * DELTA;
         });
+        let velocity = p1.velocity - extra_vel;
         universe.add_entity((ParticleComponent {
-            origin: p1.origin,
-            velocity: p1.velocity - extra_vel,
+            origin: p1.origin + velocity * DELTA,
+            velocity,
             mass: p1.mass,
             age: MIN_AGE + fastrand::f64() * (MAX_AGE - MIN_AGE)
         },));
@@ -144,6 +157,13 @@ fn ageing(p1: Query<ParticleComponent>, universe: &Universe) {
     explode.run_once(universe);
 }
 
+
+enum FrameInfo {
+    Particle(ParticleComponent),
+    EndFrame
+}
+
+
 fn main() -> Result<(), std::io::Error> {
     let mut ffmpeg = Command::new("ffmpeg")
         .args(
@@ -158,7 +178,8 @@ fn main() -> Result<(), std::io::Error> {
     let mut ffmpeg_stdin = BufWriter::new(ffmpeg.stdin.take().unwrap());
     let mut ffmpeg_stderr = ffmpeg.stderr.take().unwrap();
 
-    let (frame_sender, frame_receiver) = sync_channel::<Vec<ParticleComponent>>(FRAME_COUNT);
+    let (frame_sender, frame_receiver) = sync_channel::<FrameInfo>(FRAME_COUNT * PARTICLE_COUNT);
+        // println!("{}", FRAME_COUNT * PARTICLE_COUNT);
 
     let mut particles = Universe::<()>::default();
     
@@ -176,28 +197,25 @@ fn main() -> Result<(), std::io::Error> {
         println!("Starting");
 
         join(
-            || {
+            move || {
                 let start = Instant::now();
         
                 for _i in 0..FRAME_COUNT {
-                    join(
-                        || {
-                            (attraction, ageing).run_once(&particles);
-                        },
-                        || {
-                            let frame_data: Vec<_> = particles
-                                .iter_components_collect(|_, x: &ParticleComponent| *x);
-                            frame_sender.send(frame_data).unwrap();
+                    (
+                        attraction,
+                        ageing,
+                        |p1: Query<ParticleComponent>| {
+                            frame_sender.send(FrameInfo::Particle(*p1)).unwrap();
                         }
-                    );
+                    ).run_once(&particles);
+                    frame_sender.send(FrameInfo::EndFrame).unwrap();
                     
                     particles.process_queues();
                 }
     
-                drop(frame_sender);
                 println!("Simulation done in {}s", start.elapsed().as_secs_f32());
             },
-            || {
+            move || {
                 let start = Instant::now();
         
                 let mut canvas = initialize_offscreen_rendering().unwrap();
@@ -212,52 +230,87 @@ fn main() -> Result<(), std::io::Error> {
                     };
                 }
 
-                frame_receiver.into_iter().enumerate().for_each(|(i, frame_data)| {
+                let mut last_upper_x = 0.0;
+                let mut last_upper_y = 0.0;
+                let mut last_lower_x = 0.0;
+                let mut last_lower_y = 0.0;
+
+                for i in 0..FRAME_COUNT {
                     let mut drawing = vec![];
                     drawing.clear_canvas(Color::Rgba(0.0, 0.0, 0.0, 1.0));
                     drawing.canvas_height(FRAME_WIDTH as f32);
                     drawing.center_region(0.0, 0.0, FRAME_WIDTH as f32, FRAME_WIDTH as f32);
 
-                    if frame_data.is_empty() {
+                    let FrameInfo::Particle(first_p) = frame_receiver.recv().unwrap() else {
                         ui.draw(|gc| gc.extend(drawing.clone()));
                         let frame = block_on(render_canvas_offscreen(&mut canvas, FRAME_WIDTH, FRAME_WIDTH, 1.0, stream::iter(drawing)));
                         send_to_ffmpeg!(frame);
-                        return;
+                        continue;
+                    };
+
+                    let mut frame_data = vec![];
+                    let mut max_vel = first_p.velocity.magnitude();
+                    let mut center = first_p.origin;
+                    frame_data.push((first_p.origin, max_vel, first_p.mass));
+
+                    while let FrameInfo::Particle(p) = frame_receiver.recv().unwrap() {
+                        let p_vel = p.velocity.magnitude();
+                        if p_vel > max_vel {
+                            max_vel = p_vel;
+                        }
+                        center += p.origin;
+                        frame_data.push((p.origin, p_vel, p.mass));
                     }
 
-                    let max_vel = frame_data.iter().map(|p| FloatOrd(p.velocity.magnitude())).max().unwrap().0;
-                    let mut origins: Vec<_> = frame_data.iter().map(|p| p.origin).collect();
-                    let center = origins.iter().sum::<Vector2<f64>>().scale(1.0 / frame_data.len() as f64);
+                    center = center.scale(1.0 / frame_data.len() as f64);
+
+                    frame_data.par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.x - center.x));
+                    let mut lower_x = frame_data.get(frame_data.len() / FRAME_QUANTILE).unwrap().0.x;
+                    let mut upper_x = frame_data.get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().0.x;
     
-                    origins.par_sort_unstable_by_key(|origin| FloatOrd(origin.x - center.x));
-                    let lower_x = origins.get(origins.len() / FRAME_QUANTILE).unwrap().x;
-                    let upper_x = origins.get(origins.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().x;
-    
-                    origins.par_sort_unstable_by_key(|origin| FloatOrd(origin.y - center.y));
-                    let lower_y = origins.get(origins.len() / FRAME_QUANTILE).unwrap().y;
-                    let upper_y = origins.get(origins.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().y;
+                    frame_data.par_sort_unstable_by_key(|(origin, _, _)| FloatOrd(origin.y - center.y));
+                    let mut lower_y = frame_data.get(frame_data.len() / FRAME_QUANTILE).unwrap().0.y;
+                    let mut upper_y = frame_data.get(frame_data.len() * (FRAME_QUANTILE - 1) / FRAME_QUANTILE).unwrap().0.y;
+
+                    if i > 0 {
+                        const CAMERA_MOVE_STEP: f64 = CAMERA_MOVE_SPEED * DELTA;
+                        if (lower_x - last_lower_x).abs() > CAMERA_MOVE_STEP {
+                            lower_x = last_lower_x + (lower_x - last_lower_x) / (lower_x - last_lower_x).abs() * CAMERA_MOVE_STEP;
+                        }
+                        if (lower_y - last_lower_y).abs() > CAMERA_MOVE_STEP {
+                            lower_y = last_lower_y + (lower_y - last_lower_y) / (lower_y - last_lower_y).abs() * CAMERA_MOVE_STEP;
+                        }
+                        if (upper_x - last_upper_x).abs() > CAMERA_MOVE_STEP {
+                            upper_x = last_upper_x + (upper_x - last_upper_x) / (upper_x - last_upper_x).abs() * CAMERA_MOVE_STEP;
+                        }
+                        if (upper_y - last_upper_y).abs() > CAMERA_MOVE_STEP {
+                            upper_y = last_upper_y + (upper_y - last_upper_y) / (upper_y - last_upper_y).abs() * CAMERA_MOVE_STEP;
+                        }
+                    }
+                    last_lower_x = lower_x;
+                    last_lower_y = lower_y;
+                    last_upper_x = upper_x;
+                    last_upper_y = upper_y;
     
                     let true_frame_height = upper_y - lower_y;
                     let true_frame_width = upper_x - lower_x;
     
-                    for p in frame_data {
-                        let x = (p.origin.x - lower_x) / true_frame_width * FRAME_WIDTH as f64;
-                        let y = (p.origin.y - lower_y) / true_frame_height * FRAME_WIDTH as f64;
+                    for (origin, speed, mass) in frame_data {
+                        let x = (origin.x - lower_x) / true_frame_width * FRAME_WIDTH as f64;
+                        let y = (origin.y - lower_y) / true_frame_height * FRAME_WIDTH as f64;
     
-                        if x >= 0.0 && y >= 0.0 {
-                            let r = 0.4 + 0.6 * p.velocity.magnitude() / max_vel;
-                            let g = r;
-                            let b = (r + g) / 2.0;
-                            drawing.fill_color(Color::Rgba(r as f32, g as f32, b as f32, 1.0));
+                        let r = 0.4 + 0.6 * speed / max_vel;
+                        let g = r;
+                        let b = (r + g) / 2.0;
+                        drawing.fill_color(Color::Rgba(r as f32, g as f32, b as f32, 1.0));
 
-                            drawing.new_path();
-                            drawing.circle(x as f32, y as f32, (p.mass.powf(1.0 / 3.0) * STAR_RADIUS_FACTOR) as f32);
-                            drawing.fill();
-                        }
+                        drawing.new_path();
+                        drawing.circle(x as f32, y as f32, (mass.powf(1.0 / 3.0) * STAR_RADIUS_FACTOR) as f32);
+                        drawing.fill();
                     }
 
-                    let x = (-center.x - lower_x) / true_frame_width * FRAME_WIDTH as f64;
-                    let y = (-center.y - lower_y) / true_frame_height * FRAME_WIDTH as f64;
+                    let x = - lower_x / true_frame_width * FRAME_WIDTH as f64;
+                    let y = - lower_y / true_frame_height * FRAME_WIDTH as f64;
 
                     drawing.fill_color(Color::Rgba(CENTER_CROSS_BRIGHTNESS, 0.0, 0.0, 1.0));
                     drawing.new_path();
@@ -273,7 +326,7 @@ fn main() -> Result<(), std::io::Error> {
                     send_to_ffmpeg!(frame);
     
                     if i == 0 {
-                        return;
+                        continue;
                     }
     
                     if i % (FRAME_COUNT as f32 * 0.1) as usize == 0 {
@@ -285,7 +338,7 @@ fn main() -> Result<(), std::io::Error> {
                             elapsed * (FRAME_COUNT as f32 / i as f32 - 1.0)
                         );
                     }
-                });
+                }
 
                 if let Err(e) = ffmpeg_stdin.flush() {
                     eprintln!("{e}");
